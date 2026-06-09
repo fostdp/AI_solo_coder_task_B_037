@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -26,6 +27,7 @@ public class ECPRIService : BackgroundService, IECPRIService
     private TcpListener? _listener;
     private readonly CancellationTokenSource _cts = new();
     private int _sequenceNumber;
+    private readonly ArrayPool<byte> _bytePool = ArrayPool<byte>.Shared;
 
     public ECPRIService(
         ILogger<ECPRIService> logger,
@@ -63,28 +65,38 @@ public class ECPRIService : BackgroundService, IECPRIService
         var remoteEndPoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
         _logger.LogInformation($"New eCPRI connection from {remoteEndPoint}");
 
+        var buffer = _bytePool.Rent(_options.BufferSize);
+        var receiveBuffer = new byte[_options.BufferSize];
+        var dataBuffer = new List<byte>(_options.BufferSize * 2);
+
         try
         {
             using var stream = client.GetStream();
-            var buffer = new byte[_options.BufferSize];
-            var dataBuffer = new List<byte>();
 
             while (!cancellationToken.IsCancellationRequested && client.Connected)
             {
-                int bytesRead = await stream.ReadAsync(buffer, cancellationToken);
+                int bytesRead = await stream.ReadAsync(receiveBuffer.AsMemory(0, _options.BufferSize), cancellationToken);
                 if (bytesRead == 0) break;
 
-                dataBuffer.AddRange(buffer.Take(bytesRead));
+                dataBuffer.AddRange(receiveBuffer.AsSpan(0, bytesRead).ToArray());
 
                 while (dataBuffer.Count >= 4)
                 {
-                    int length = BitConverter.ToInt32(dataBuffer.Take(4).ToArray(), 0);
+                    int length = BitConverter.ToInt32(dataBuffer.AsSpan(0, 4));
                     if (dataBuffer.Count < 4 + length) break;
 
-                    var packetData = dataBuffer.Skip(4).Take(length).ToArray();
-                    dataBuffer.RemoveRange(0, 4 + length);
+                    var packetData = _bytePool.Rent(length);
+                    try
+                    {
+                        dataBuffer.AsSpan(4, length).CopyTo(packetData);
+                        dataBuffer.RemoveRange(0, 4 + length);
 
-                    await ProcessPacketAsync(packetData, cancellationToken);
+                        await ProcessPacketAsync(packetData.AsSpan(0, length), cancellationToken);
+                    }
+                    finally
+                    {
+                        _bytePool.Return(packetData);
+                    }
                 }
             }
         }
@@ -94,6 +106,7 @@ public class ECPRIService : BackgroundService, IECPRIService
         }
         finally
         {
+            _bytePool.Return(buffer);
             client.Close();
             _logger.LogInformation($"eCPRI connection closed: {remoteEndPoint}");
         }
@@ -180,12 +193,12 @@ public class ECPRIService : BackgroundService, IECPRIService
         };
     }
 
-    private async Task ProcessPacketAsync(byte[] packetData, CancellationToken cancellationToken)
+    private async Task ProcessPacketAsync(ReadOnlySpan<byte> packetData, CancellationToken cancellationToken)
     {
         try
         {
-            var jsonString = Encoding.UTF8.GetString(packetData);
-            var packet = JsonSerializer.Deserialize<ECPRIDataPacket>(jsonString,
+            var reader = new Utf8JsonReader(packetData);
+            var packet = JsonSerializer.Deserialize<ECPRIDataPacket>(ref reader,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
             if (packet == null)
@@ -214,57 +227,84 @@ public class ECPRIService : BackgroundService, IECPRIService
         var stationId = Guid.Parse(packet.StationId);
         var channels = (await channelRepo.GetByStationIdAsync(stationId, cancellationToken)).ToList();
 
-        var metricsList = new List<ChannelMetrics>();
-        var alarmsToCheck = new List<(Channel Channel, double SWR, double Temp)>();
+        var channelDict = ArrayPool<Channel?>.Shared.Rent(128);
+        var metricsArray = ArrayPool<ChannelMetrics>.Shared.Rent(packet.Channels.Count);
+        var alarmsArray = ArrayPool<(Channel Channel, double SWR, double Temp)>.Shared.Rent(packet.Channels.Count);
 
-        foreach (var channelData in packet.Channels)
+        try
         {
-            var channel = channels.FirstOrDefault(c => c.ChannelIndex == channelData.ChannelIndex);
-            if (channel == null) continue;
-
-            double amplitudeDeviation = 20 * Math.Log10(Math.Max(channelData.Amplitude, 0.0001) / (double)channel.NominalAmplitude);
-            double phaseDeviation = (channelData.Phase - (double)channel.NominalPhase) * 180 / Math.PI;
-
-            var metrics = new ChannelMetrics
+            foreach (var ch in channels)
             {
-                StationId = packet.StationId,
-                ChannelId = channel.Id.ToString(),
-                StationCode = packet.StationCode,
-                ChannelIndex = channelData.ChannelIndex,
-                RowIndex = channelData.RowIndex,
-                ColumnIndex = channelData.ColumnIndex,
-                Amplitude = channelData.Amplitude,
-                Phase = channelData.Phase,
-                AmplitudeDeviation = amplitudeDeviation,
-                PhaseDeviation = phaseDeviation,
-                Swr = channelData.Swr,
-                PaTemperature = channelData.PaTemperature,
-                TxPower = channelData.TxPower,
-                RxPower = channelData.RxPower,
-                Ber = channelData.Ber,
-                DataSource = "ecpri",
-                Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(packet.Timestamp).UtcDateTime
-            };
-
-            metricsList.Add(metrics);
-            alarmsToCheck.Add((channel, channelData.Swr, channelData.PaTemperature));
-        }
-
-        if (metricsList.Any())
-        {
-            await influxRepo.WriteChannelMetricsAsync(metricsList, cancellationToken);
-            _logger.LogInformation($"Received {metricsList.Count} channel metrics from {packet.StationCode}");
-
-            foreach (var (channel, swr, temp) in alarmsToCheck)
-            {
-                await alarmService.CheckAndCreateChannelAlarmsAsync(
-                    stationId, channel.Id, swr, temp, cancellationToken);
+                if (ch.ChannelIndex >= 0 && ch.ChannelIndex < 128)
+                {
+                    channelDict[ch.ChannelIndex] = ch;
+                }
             }
 
-            await alarmService.CheckSectorFailureAsync(stationId, cancellationToken);
-        }
+            int metricsCount = 0;
 
-        return metricsList.Count;
+            foreach (var channelData in packet.Channels)
+            {
+                if (channelData.ChannelIndex < 0 || channelData.ChannelIndex >= 128) continue;
+
+                var channel = channelDict[channelData.ChannelIndex];
+                if (channel == null) continue;
+
+                double amplitudeDeviation = 20 * Math.Log10(Math.Max(channelData.Amplitude, 0.0001) / (double)channel.NominalAmplitude);
+                double phaseDeviation = (channelData.Phase - (double)channel.NominalPhase) * 180 / Math.PI;
+
+                var metrics = new ChannelMetrics
+                {
+                    StationId = packet.StationId,
+                    ChannelId = channel.Id.ToString(),
+                    StationCode = packet.StationCode,
+                    ChannelIndex = channelData.ChannelIndex,
+                    RowIndex = channelData.RowIndex,
+                    ColumnIndex = channelData.ColumnIndex,
+                    Amplitude = channelData.Amplitude,
+                    Phase = channelData.Phase,
+                    AmplitudeDeviation = amplitudeDeviation,
+                    PhaseDeviation = phaseDeviation,
+                    Swr = channelData.Swr,
+                    PaTemperature = channelData.PaTemperature,
+                    TxPower = channelData.TxPower,
+                    RxPower = channelData.RxPower,
+                    Ber = channelData.Ber,
+                    DataSource = "ecpri",
+                    Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(packet.Timestamp).UtcDateTime
+                };
+
+                metricsArray[metricsCount] = metrics;
+                alarmsArray[metricsCount] = (channel, channelData.Swr, channelData.PaTemperature);
+                metricsCount++;
+            }
+
+            if (metricsCount > 0)
+            {
+                var metricsSpan = metricsArray.AsSpan(0, metricsCount);
+                await influxRepo.WriteChannelMetricsAsync(metricsSpan.ToArray(), cancellationToken);
+                _logger.LogInformation($"Received {metricsCount} channel metrics from {packet.StationCode}");
+
+                var alarmsSpan = alarmsArray.AsSpan(0, metricsCount);
+                for (int i = 0; i < alarmsSpan.Length; i++)
+                {
+                    var (channel, swr, temp) = alarmsSpan[i];
+                    await alarmService.CheckAndCreateChannelAlarmsAsync(
+                        stationId, channel.Id, swr, temp, cancellationToken);
+                }
+
+                await alarmService.CheckSectorFailureAsync(stationId, cancellationToken);
+            }
+
+            return metricsCount;
+        }
+        finally
+        {
+            Array.Clear(channelDict, 0, 128);
+            ArrayPool<Channel?>.Shared.Return(channelDict);
+            ArrayPool<ChannelMetrics>.Shared.Return(metricsArray);
+            ArrayPool<(Channel, double, double)>.Shared.Return(alarmsArray);
+        }
     }
 
     public override void Dispose()

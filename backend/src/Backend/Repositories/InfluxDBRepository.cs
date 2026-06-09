@@ -47,30 +47,68 @@ public class InfluxDBRepository : IInfluxDBRepository
             points.Add(point);
         }
 
-        await writeApi.WritePointsAsync(points, _options.Buckets.Metrics, _options.Org, cancellationToken);
+        await writeApi.WritePointsAsync(points, _options.Buckets.MetricsRaw, _options.Org, cancellationToken);
+    }
+
+    private string SelectBucketByTimeRange(DateTime startTime, DateTime endTime)
+    {
+        var timeSpan = endTime - startTime;
+        
+        if (timeSpan.TotalDays <= 7)
+        {
+            return _options.Buckets.MetricsRaw;
+        }
+        else if (timeSpan.TotalDays <= 30)
+        {
+            return _options.Buckets.Metrics1h;
+        }
+        else
+        {
+            return _options.Buckets.Metrics24h;
+        }
+    }
+
+    private (string Bucket, string FieldSuffix) SelectBucketAndSuffix(DateTime startTime, DateTime endTime, string aggregation)
+    {
+        var timeSpan = endTime - startTime;
+        
+        if (aggregation == "raw" && timeSpan.TotalDays <= 7)
+        {
+            return (_options.Buckets.MetricsRaw, "");
+        }
+        else if (timeSpan.TotalDays <= 30)
+        {
+            return (_options.Buckets.Metrics1h, "_mean");
+        }
+        else
+        {
+            return (_options.Buckets.Metrics24h, "_mean");
+        }
     }
 
     public async Task<IEnumerable<ChannelMetrics>> GetChannelMetricsAsync(
         string channelId, DateTime startTime, DateTime endTime,
         string aggregation = "raw", CancellationToken cancellationToken = default)
     {
-        var query = BuildMetricsQuery(channelId, "channel_id", startTime, endTime, aggregation);
-        return await ExecuteMetricsQuery(query, cancellationToken);
+        var (bucket, fieldSuffix) = SelectBucketAndSuffix(startTime, endTime, aggregation);
+        var query = BuildMetricsQuery(channelId, "channel_id", startTime, endTime, aggregation, bucket, fieldSuffix);
+        return await ExecuteMetricsQuery(query, bucket, fieldSuffix, cancellationToken);
     }
 
     public async Task<IEnumerable<ChannelMetrics>> GetStationMetricsAsync(
         string stationId, DateTime startTime, DateTime endTime,
         CancellationToken cancellationToken = default)
     {
-        var query = BuildMetricsQuery(stationId, "station_id", startTime, endTime, "raw");
-        return await ExecuteMetricsQuery(query, cancellationToken);
+        var (bucket, fieldSuffix) = SelectBucketAndSuffix(startTime, endTime, "raw");
+        var query = BuildMetricsQuery(stationId, "station_id", startTime, endTime, "raw", bucket, fieldSuffix);
+        return await ExecuteMetricsQuery(query, bucket, fieldSuffix, cancellationToken);
     }
 
     public async Task<ChannelMetrics?> GetLatestChannelMetricsAsync(
         string channelId, CancellationToken cancellationToken = default)
     {
         var query = $@"
-            from(bucket: ""{_options.Buckets.Metrics}"")
+            from(bucket: ""{_options.Buckets.MetricsRaw}"")
                 |> range(start: -1h)
                 |> filter(fn: (r) => r._measurement == ""channel_metrics"" and r.channel_id == ""{channelId}"")
                 |> last()
@@ -78,7 +116,7 @@ public class InfluxDBRepository : IInfluxDBRepository
                 |> limit(n: 1)
         ";
 
-        var metrics = await ExecuteMetricsQuery(query, cancellationToken);
+        var metrics = await ExecuteMetricsQuery(query, _options.Buckets.MetricsRaw, "", cancellationToken);
         return metrics.FirstOrDefault();
     }
 
@@ -86,7 +124,7 @@ public class InfluxDBRepository : IInfluxDBRepository
         string stationId, CancellationToken cancellationToken = default)
     {
         var query = $@"
-            from(bucket: ""{_options.Buckets.Metrics}"")
+            from(bucket: ""{_options.Buckets.MetricsRaw}"")
                 |> range(start: -10m)
                 |> filter(fn: (r) => r._measurement == ""channel_metrics"" and r.station_id == ""{stationId}"")
                 |> group(columns: [""channel_id""])
@@ -94,7 +132,7 @@ public class InfluxDBRepository : IInfluxDBRepository
                 |> pivot(rowKey:[""_time""], columnKey: [""_field""], valueColumn: ""_value"")
         ";
 
-        return await ExecuteMetricsQuery(query, cancellationToken);
+        return await ExecuteMetricsQuery(query, _options.Buckets.MetricsRaw, "", cancellationToken);
     }
 
     public async Task<double?> GetMetricAverageAsync(
@@ -102,12 +140,15 @@ public class InfluxDBRepository : IInfluxDBRepository
         DateTime startTime, DateTime endTime,
         CancellationToken cancellationToken = default)
     {
+        var bucket = SelectBucketByTimeRange(startTime, endTime);
+        var (_, fieldSuffix) = SelectBucketAndSuffix(startTime, endTime, "raw");
+        
         var query = $@"
-            from(bucket: ""{_options.Buckets.Metrics}"")
+            from(bucket: ""{bucket}"")
                 |> range(start: {DateTimeToRFC3339(startTime)}, stop: {DateTimeToRFC3339(endTime)})
                 |> filter(fn: (r) => r._measurement == ""channel_metrics"" 
                     and r.channel_id == ""{channelId}"" 
-                    and r._field == ""{field}"")
+                    and r._field == ""{field}{fieldSuffix}"")
                 |> mean()
         ";
 
@@ -199,7 +240,8 @@ public class InfluxDBRepository : IInfluxDBRepository
         return results;
     }
 
-    private string BuildMetricsQuery(string id, string tagName, DateTime startTime, DateTime endTime, string aggregation)
+    private string BuildMetricsQuery(string id, string tagName, DateTime startTime, DateTime endTime, 
+        string aggregation, string bucket, string fieldSuffix)
     {
         string aggregateWindow = aggregation switch
         {
@@ -212,23 +254,28 @@ public class InfluxDBRepository : IInfluxDBRepository
             ? ""
             : $"|> aggregateWindow(every: {aggregateWindow}, fn: mean, createEmpty: false)";
 
+        var fields = new[] { "amplitude", "phase", "amplitude_deviation", "phase_deviation", "swr", "pa_temperature", "tx_power", "rx_power", "ber" };
+        var fieldFilters = string.Join(" or ", fields.Select(f => $"r._field == \"{f}{fieldSuffix}\""));
+
         return $@"
-            from(bucket: ""{_options.Buckets.Metrics}"")
+            from(bucket: ""{bucket}"")
                 |> range(start: {DateTimeToRFC3339(startTime)}, stop: {DateTimeToRFC3339(endTime)})
                 |> filter(fn: (r) => r._measurement == ""channel_metrics"" and r.{tagName} == ""{id}"")
+                |> filter(fn: (r) => {fieldFilters})
                 {aggregationPart}
                 |> pivot(rowKey:[""_time""], columnKey: [""_field""], valueColumn: ""_value"")
                 |> sort(columns: [""_time""])
         ";
     }
 
-    private async Task<IEnumerable<ChannelMetrics>> ExecuteMetricsQuery(string fluxQuery,
+    private async Task<IEnumerable<ChannelMetrics>> ExecuteMetricsQuery(string fluxQuery, string bucket, string fieldSuffix,
         CancellationToken cancellationToken = default)
     {
         var queryApi = _client.GetQueryApi();
         var tables = await queryApi.QueryAsync(fluxQuery, _options.Org, cancellationToken);
 
         var metrics = new List<ChannelMetrics>();
+        var fields = new[] { "amplitude", "phase", "amplitude_deviation", "phase_deviation", "swr", "pa_temperature", "tx_power", "rx_power", "ber" };
 
         foreach (var table in tables)
         {
@@ -246,24 +293,25 @@ public class InfluxDBRepository : IInfluxDBRepository
                     Timestamp = record.GetTime().GetValueOrDefault().ToDateTimeUtc()
                 };
 
-                if (double.TryParse(record.GetValueByKey("amplitude")?.ToString(), out var amp))
-                    metric.Amplitude = amp;
-                if (double.TryParse(record.GetValueByKey("phase")?.ToString(), out var phase))
-                    metric.Phase = phase;
-                if (double.TryParse(record.GetValueByKey("amplitude_deviation")?.ToString(), out var ampDev))
-                    metric.AmplitudeDeviation = ampDev;
-                if (double.TryParse(record.GetValueByKey("phase_deviation")?.ToString(), out var phaseDev))
-                    metric.PhaseDeviation = phaseDev;
-                if (double.TryParse(record.GetValueByKey("swr")?.ToString(), out var swr))
-                    metric.Swr = swr;
-                if (double.TryParse(record.GetValueByKey("pa_temperature")?.ToString(), out var temp))
-                    metric.PaTemperature = temp;
-                if (double.TryParse(record.GetValueByKey("tx_power")?.ToString(), out var tx))
-                    metric.TxPower = tx;
-                if (double.TryParse(record.GetValueByKey("rx_power")?.ToString(), out var rx))
-                    metric.RxPower = rx;
-                if (double.TryParse(record.GetValueByKey("ber")?.ToString(), out var ber))
-                    metric.Ber = ber;
+                foreach (var field in fields)
+                {
+                    var fieldName = field + fieldSuffix;
+                    if (double.TryParse(record.GetValueByKey(fieldName)?.ToString(), out var value))
+                    {
+                        switch (field)
+                        {
+                            case "amplitude": metric.Amplitude = value; break;
+                            case "phase": metric.Phase = value; break;
+                            case "amplitude_deviation": metric.AmplitudeDeviation = value; break;
+                            case "phase_deviation": metric.PhaseDeviation = value; break;
+                            case "swr": metric.Swr = value; break;
+                            case "pa_temperature": metric.PaTemperature = value; break;
+                            case "tx_power": metric.TxPower = value; break;
+                            case "rx_power": metric.RxPower = value; break;
+                            case "ber": metric.Ber = value; break;
+                        }
+                    }
+                }
 
                 metrics.Add(metric);
             }

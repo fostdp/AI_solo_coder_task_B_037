@@ -10,7 +10,9 @@ public class InfluxDBOptions
 
 public class BucketOptions
 {
-    public string Metrics { get; set; } = "antenna_metrics";
+    public string MetricsRaw { get; set; } = "antenna_metrics_raw";
+    public string Metrics1h { get; set; } = "antenna_metrics_1h";
+    public string Metrics24h { get; set; } = "antenna_metrics_24h";
     public string Calibration { get; set; } = "antenna_calibration";
     public string Diagnosis { get; set; } = "antenna_diagnosis";
 }

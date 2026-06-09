@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed, shallowRef } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { ChannelStatus } from '@/types'
 import { getAmplitudePhaseColor, hexToRgb } from '@/utils/color'
-import { generateBeampatternData } from '@/utils/mock'
+import BeampatternWorker from '@/workers/beampattern.worker?worker'
 
 const props = defineProps<{
   channels: ChannelStatus[]
@@ -18,6 +18,10 @@ const emit = defineEmits<{
 const containerRef = ref<HTMLDivElement | null>(null)
 const showBeampattern = ref(props.showBeampattern ?? false)
 const autoRotate = ref(false)
+const isCalculating = ref(false)
+const currentSLL = ref<number | null>(null)
+
+const beampatternWorker = shallowRef<Worker | null>(null)
 
 let scene: THREE.Scene | null = null
 let camera: THREE.PerspectiveCamera | null = null
@@ -34,8 +38,28 @@ const rows = 8
 const cols = 8
 const elementSpacing = 1.2
 
+const initWorker = () => {
+  beampatternWorker.value = new BeampatternWorker()
+  beampatternWorker.value.onmessage = (event: MessageEvent<BeamPatternWorkerResult>) => {
+    handleBeampatternResult(event.data)
+  }
+  beampatternWorker.value.onerror = (error) => {
+    console.error('Beampattern worker error:', error)
+    isCalculating.value = false
+  }
+}
+
+const terminateWorker = () => {
+  if (beampatternWorker.value) {
+    beampatternWorker.value.terminate()
+    beampatternWorker.value = null
+  }
+}
+
 const initScene = () => {
   if (!containerRef.value) return
+
+  initWorker()
 
   const width = containerRef.value.clientWidth
   const height = containerRef.value.clientHeight
@@ -183,46 +207,88 @@ const createAntennaArray = () => {
   antennaGroup.add(rightFrame)
 }
 
-const createBeampattern = () => {
-  if (!scene || !antennaGroup) return
+const createBeampattern = async () => {
+  if (!scene || !antennaGroup || !beampatternWorker.value) return
 
   removeBeampattern()
+  isCalculating.value = true
 
-  const beampatternData = generateBeampatternData(45, 90)
-  const thetaPoints = beampatternData.length
-  const phiPoints = beampatternData[0].length
+  const workerChannels = props.channels.map(ch => ({
+    channelIndex: ch.channelIndex,
+    rowIndex: ch.rowIndex,
+    columnIndex: ch.columnIndex,
+    amplitude: 1.0 + ch.amplitudeDeviation / 20,
+    phase: ch.phaseDeviation * Math.PI / 180,
+    calibrationCoeffAmplitude: 1.0,
+    calibrationCoeffPhase: 0
+  }))
 
-  const geometry = new THREE.SphereGeometry(6, phiPoints - 1, thetaPoints - 1)
-  const positions = geometry.attributes.position
-  const colors = new Float32Array(positions.count * 3)
+  const message: BeamPatternWorkerMessage = {
+    channels: workerChannels,
+    azimuthStart: -180,
+    azimuthEnd: 180,
+    azimuthStep: 3,
+    elevationStart: 0,
+    elevationEnd: 90,
+    elevationStep: 3
+  }
 
-  for (let i = 0; i < thetaPoints; i++) {
-    for (let j = 0; j < phiPoints; j++) {
-      const idx = i * phiPoints + j
-      if (idx >= positions.count) continue
+  beampatternWorker.value.postMessage(message)
+}
 
-      const gain = beampatternData[i][j]
-      const normalizedGain = (gain + 40) / 60
+const handleBeampatternResult = (result: BeamPatternWorkerResult) => {
+  if (!scene || !antennaGroup) {
+    isCalculating.value = false
+    return
+  }
+
+  const { pattern, azimuthAngles, elevationAngles, sll } = result
+  currentSLL.value = sll
+
+  const elPoints = elevationAngles.length
+  const azPoints = azimuthAngles.length
+
+  const geometry = new THREE.BufferGeometry()
+  const vertices: number[] = []
+  const colors: number[] = []
+  const indices: number[] = []
+
+  for (let elIdx = 0; elIdx < elPoints; elIdx++) {
+    for (let azIdx = 0; azIdx < azPoints; azIdx++) {
+      const gain = pattern[elIdx][azIdx]
+      const normalizedGain = Math.max(0, Math.min(1, (gain + 40) / 60))
       const radius = 4 + normalizedGain * 4
 
-      const theta = (i / (thetaPoints - 1)) * Math.PI / 2
-      const phi = (j / (phiPoints - 1)) * Math.PI * 2 - Math.PI
+      const elevationRad = (elevationAngles[elIdx] * Math.PI) / 180
+      const azimuthRad = (azimuthAngles[azIdx] * Math.PI) / 180
 
-      const x = radius * Math.sin(theta) * Math.cos(phi)
-      const y = radius * Math.cos(theta)
-      const z = radius * Math.sin(theta) * Math.sin(phi)
+      const x = radius * Math.sin(elevationRad) * Math.cos(azimuthRad)
+      const y = radius * Math.cos(elevationRad) + 2
+      const z = radius * Math.sin(elevationRad) * Math.sin(azimuthRad)
 
-      positions.setXYZ(idx, x, y + 2, z)
+      vertices.push(x, y, z)
 
       const hue = (1 - normalizedGain) * 0.35
       const color = new THREE.Color().setHSL(hue, 0.8, 0.5)
-      colors[idx * 3] = color.r
-      colors[idx * 3 + 1] = color.g
-      colors[idx * 3 + 2] = color.b
+      colors.push(color.r, color.g, color.b)
     }
   }
 
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  for (let elIdx = 0; elIdx < elPoints - 1; elIdx++) {
+    for (let azIdx = 0; azIdx < azPoints - 1; azIdx++) {
+      const a = elIdx * azPoints + azIdx
+      const b = elIdx * azPoints + azIdx + 1
+      const c = (elIdx + 1) * azPoints + azIdx
+      const d = (elIdx + 1) * azPoints + azIdx + 1
+
+      indices.push(a, c, b)
+      indices.push(b, c, d)
+    }
+  }
+
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+  geometry.setIndex(indices)
   geometry.computeVertexNormals()
 
   const material = new THREE.MeshStandardMaterial({
@@ -241,10 +307,12 @@ const createBeampattern = () => {
   const wireframeMaterial = new THREE.LineBasicMaterial({
     color: 0x666666,
     transparent: true,
-    opacity: 0.2
+    opacity: 0.15
   })
   const wireframe = new THREE.LineSegments(wireframeGeometry, wireframeMaterial)
   beampatternMesh.add(wireframe)
+
+  isCalculating.value = false
 }
 
 const removeBeampattern = () => {
@@ -380,6 +448,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  terminateWorker()
   window.removeEventListener('resize', onResize)
 
   if (animationId) {
@@ -430,20 +499,31 @@ const statusStats = computed(() => {
           <span class="stat-dot fault"></span>
           <span>故障 {{ statusStats.fault }}</span>
         </div>
+        <div v-if="currentSLL !== null" class="stat-item sll-display">
+          <span class="sll-label">SLL:</span>
+          <span :class="{ 'sll-good': currentSLL <= -20, 'sll-warning': currentSLL > -20 && currentSLL <= -15, 'sll-bad': currentSLL > -15 }">
+            {{ currentSLL.toFixed(1) }} dB
+          </span>
+        </div>
       </div>
       <div class="toolbar-buttons">
         <button
           class="toolbar-btn"
-          :class="{ active: showBeampattern }"
+          :class="{ active: showBeampattern, loading: isCalculating }"
           @click="toggleBeampattern"
           :title="showBeampattern ? '隐藏方向图' : '显示方向图'"
+          :disabled="isCalculating"
         >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <svg v-if="!isCalculating" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2a10 10 0 1 0 10 10" />
             <path d="M12 6v6l4 2" />
             <circle cx="12" cy="12" r="10" />
           </svg>
-          <span>方向图</span>
+          <svg v-else class="spinner" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" stroke-opacity="0.25" />
+            <path d="M12 2a10 10 0 0 1 10 10" />
+          </svg>
+          <span>{{ isCalculating ? '计算中...' : '方向图' }}</span>
         </button>
         <button
           class="toolbar-btn"
@@ -466,7 +546,14 @@ const statusStats = computed(() => {
       </div>
     </div>
 
-    <div ref="containerRef" class="canvas-container"></div>
+    <div ref="containerRef" class="canvas-container">
+      <div v-if="isCalculating" class="calculating-overlay">
+        <div class="calculating-content">
+          <div class="spinner-large"></div>
+          <div class="calculating-text">正在计算方向图...</div>
+        </div>
+      </div>
+    </div>
 
     <div class="info-panel">
       <div class="info-title">操作提示</div>
@@ -503,8 +590,53 @@ const statusStats = computed(() => {
 }
 
 .canvas-container {
+  position: relative;
   width: 100%;
   height: 100%;
+}
+
+.calculating-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  backdrop-filter: blur(2px);
+}
+
+.calculating-content {
+  background: white;
+  padding: 20px 30px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.spinner-large {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e0e0e0;
+  border-top-color: $primary-color;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.calculating-text {
+  font-size: 14px;
+  color: $text-primary;
+  font-weight: 500;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .toolbar {
@@ -550,6 +682,32 @@ const statusStats = computed(() => {
         background: $status-critical;
       }
     }
+
+    &.sll-display {
+      border-left: 1px solid $border-color;
+      padding-left: 12px;
+      margin-left: 4px;
+
+      .sll-label {
+        color: $text-secondary;
+        font-weight: 500;
+      }
+
+      .sll-good {
+        color: $status-normal;
+        font-weight: 600;
+      }
+
+      .sll-warning {
+        color: $status-warning;
+        font-weight: 600;
+      }
+
+      .sll-bad {
+        color: $status-critical;
+        font-weight: 600;
+      }
+    }
   }
 
   .toolbar-buttons {
@@ -580,6 +738,20 @@ const statusStats = computed(() => {
       background: $primary-color;
       color: white;
       border-color: $primary-color;
+    }
+
+    &.loading {
+      cursor: not-allowed;
+      opacity: 0.8;
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    .spinner {
+      animation: spin 1s linear infinite;
     }
   }
 }
