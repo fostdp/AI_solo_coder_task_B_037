@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: 5g-antenna-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: antenna_monitoring
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - antenna-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d antenna_monitoring"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: 5g-antenna-influxdb
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: admin123456
+      DOCKER_INFLUXDB_INIT_ORG: 5g-operator
+      DOCKER_INFLUXDB_INIT_BUCKET: antenna_metrics
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: 5g-antenna-monitoring-token-2024
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb2
+    networks:
+      - antenna-network
+    healthcheck:
+      test: ["CMD", "influx", "ping", "--host", "http://localhost:8086"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: 5g-antenna-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+      - ./database/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - antenna-network
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t 'test' -m 'healthcheck' -u antenna_admin -P mqtt_password_2024 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: 5g-antenna-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:5000
+      ConnectionStrings__PostgreSQL: Host=postgres;Port=5432;Database=antenna_monitoring;Username=postgres;Password=postgres;Pooling=true;
+      ConnectionStrings__InfluxDB: http://influxdb:8086
+      InfluxDB__Url: http://influxdb:8086
+      InfluxDB__Token: 5g-antenna-monitoring-token-2024
+      InfluxDB__Org: 5g-operator
+      InfluxDB__Buckets__Metrics: antenna_metrics
+      InfluxDB__Buckets__Calibration: antenna_calibration
+      InfluxDB__Buckets__Diagnosis: antenna_diagnosis
+      MQTT__Broker: mosquitto
+      MQTT__Port: 1883
+      MQTT__ClientId: antenna-monitoring-service-docker
+      MQTT__UserName: antenna_admin
+      MQTT__Password: mqtt_password_2024
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    networks:
+      - antenna-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: 5g-antenna-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    environment:
+      VITE_API_BASE_URL: http://localhost:5000/api
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - antenna-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:80 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  postgres_data:
+    driver: local
+  influxdb_data:
+    driver: local
+  influxdb_config:
+    driver: local
+  mosquitto_data:
+    driver: local
+  mosquitto_log:
+    driver: local
+
+networks:
+  antenna-network:
+    driver: bridge
+    name: 5g-antenna-network
