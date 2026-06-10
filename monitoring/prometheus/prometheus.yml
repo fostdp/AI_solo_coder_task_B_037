@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: '5g-antenna-monitor'
+
+rule_files:
+  - "rules/*.yml"
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'backend'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['backend:5000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: '5g-antenna-backend'
+
+  - job_name: 'influxdb'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['influxdb:8086']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: '5g-antenna-influxdb'
+
+  - job_name: 'ecpri-simulator'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['ecpri-simulator:8000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: '5g-antenna-ecpri-simulator'

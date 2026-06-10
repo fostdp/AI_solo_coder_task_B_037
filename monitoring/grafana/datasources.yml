@@ -1,0 +1,44 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: 15s
+      queryTimeout: 60s
+    version: 1
+
+  - name: InfluxDB
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    database: antenna_metrics_raw
+    jsonData:
+      version: Flux
+      organization: 5g-operator
+      defaultBucket: antenna_metrics_raw
+      tlsSkipVerify: true
+    secureJsonData:
+      token: 5g-antenna-monitoring-token-2024
+    editable: true
+    version: 1
+
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: antenna_monitoring
+    user: postgres
+    secureJsonData:
+      password: postgres_password
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    editable: true
+    version: 1

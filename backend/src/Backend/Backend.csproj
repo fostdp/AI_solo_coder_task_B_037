@@ -30,6 +30,13 @@
     <PackageReference Include="MediatR" Version="12.3.0" />
     <PackageReference Include="MediatR.Extensions.Microsoft.DependencyInjection" Version="12.3.0" />
     <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.1" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+    <PackageReference Include="Serilog.Sinks.MQTT" Version="2.1.0" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="8.0.0" />
+    <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
+    <PackageReference Include="prometheus-net.SystemMetrics" Version="3.0.0" />
   </ItemGroup>
 
 </Project>

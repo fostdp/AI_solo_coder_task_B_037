@@ -33,4 +33,6 @@ public interface IInfluxDBRepository
     Task<IEnumerable<double[]>> GetBeamPatternHistoryAsync(
         Guid stationId, int limit = 10,
         CancellationToken cancellationToken = default);
+
+    Task<bool> CheckHealthAsync(CancellationToken cancellationToken = default);
 }

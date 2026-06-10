@@ -1,0 +1,65 @@
+groups:
+  - name: 5g-antenna-alerts
+    rules:
+      - alert: BackendServiceDown
+        expr: up{job="backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend service is down"
+          description: "Backend service has been down for more than 1 minute."
+
+      - alert: HighSWRDetected
+        expr: max(alarms_active_total{severity="critical"}) by (level) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High SWR detected on channels"
+          description: "One or more channels have SWR exceeding threshold."
+
+      - alert: HighChannelFailureProbability
+        expr: max(diagnosis_avg_failure_probability) by (station_id) > 0.7
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High channel failure probability"
+          description: "Station {{ $labels.station_id }} has channels with high failure probability."
+
+      - alert: CalibrationSLLNotMet
+        expr: max(calibration_sll_after_db) by (station_id) > -20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Calibration SLL requirement not met"
+          description: "Station {{ $labels.station_id }} SLL is {{ $value }} dB, should be <= -20 dB."
+
+      - alert: HighErrorRate
+        expr: rate(ecpri_packets_failed_total[5m]) / rate(ecpri_packets_received_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High eCPRI packet error rate"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL service has been down for more than 1 minute."
+
+      - alert: InfluxDBDown
+        expr: up{job="influxdb"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "InfluxDB is down"
+          description: "InfluxDB service has been down for more than 1 minute."

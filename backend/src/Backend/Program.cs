@@ -3,10 +3,72 @@ using AntennaMonitoring.Repositories;
 using AntennaMonitoring.Services;
 using AntennaMonitoring.Algorithms;
 using AntennaMonitoring.Models;
+using AntennaMonitoring.Extensions;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Serilog;
+using Serilog.Events;
+using Serilog.Sinks.MQTT;
+using Prometheus;
+using MQTTnet.Client;
+using MQTTnet;
 
-var builder = WebApplication.CreateBuilder(args);
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
+    .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("ServiceName", "5g-antenna-backend")
+    .Enrich.WithProperty("Environment", Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production")
+    .WriteTo.Console(
+        restrictedToMinimumLevel: LogEventLevel.Information,
+        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .WriteTo.File(
+        path: "logs/antenna-monitoring-.log",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        fileSizeLimitBytes: 50 * 1024 * 1024,
+        rollOnFileSizeLimit: true,
+        restrictedToMinimumLevel: LogEventLevel.Information,
+        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
+
+try
+{
+    Log.Information("Starting 5G Antenna Monitoring Backend Service...");
+
+    var builder = WebApplication.CreateBuilder(args);
+
+    builder.Host.UseSerilog((context, services, configuration) =>
+    {
+        var mqttOptions = context.Configuration.GetSection("MQTT").Get<MQTTOptions>();
+        var mqttClientOptions = new MqttClientOptionsBuilder()
+            .WithTcpServer(mqttOptions?.Broker ?? "localhost", mqttOptions?.Port ?? 1883)
+            .WithCredentials(mqttOptions?.UserName ?? string.Empty, mqttOptions?.Password ?? string.Empty)
+            .WithClientId(mqttOptions?.ClientId + "-serilog" ?? "antenna-monitoring-serilog")
+            .WithCleanSession()
+            .Build();
+
+        configuration
+            .ReadFrom.Configuration(context.Configuration)
+            .Enrich.FromLogContext()
+            .Enrich.WithProperty("ServiceName", "5g-antenna-backend")
+            .Enrich.WithProperty("Environment", context.HostingEnvironment.EnvironmentName)
+            .WriteTo.Console(
+                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff} {Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
+            .WriteTo.File(
+                path: "logs/antenna-monitoring-.log",
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 30,
+                fileSizeLimitBytes: 50 * 1024 * 1024,
+                rollOnFileSizeLimit: true,
+                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff} {Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
+            .WriteTo.MQTT(
+                clientOptions: mqttClientOptions,
+                topic: "5g/antenna/logs",
+                restrictedToMinimumLevel: LogEventLevel.Warning,
+                useSecureConnection: false,
+                qosLevel: MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce);
+    });
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -70,6 +132,11 @@ builder.Services.AddCors(options =>
     });
 });
 
+builder.Services.AddHealthChecks()
+    .AddNpgSql(builder.Configuration.GetConnectionString("PostgreSQL") ?? string.Empty, name: "postgresql")
+    .AddCheck<InfluxDBHealthCheck>("influxdb")
+    .ForwardToPrometheus();
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -78,10 +145,48 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseSerilogRequestLogging(options =>
+{
+    options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
+    options.GetLevel = (httpContext, elapsed, ex) =>
+    {
+        if (ex != null) return LogEventLevel.Error;
+        if (httpContext.Response.StatusCode >= 500) return LogEventLevel.Error;
+        if (httpContext.Response.StatusCode >= 400) return LogEventLevel.Warning;
+        if (httpContext.Request.Path.StartsWithSegments("/health") ||
+            httpContext.Request.Path.StartsWithSegments("/metrics"))
+            return LogEventLevel.Debug;
+        return LogEventLevel.Information;
+    };
+});
+
 app.UseCors("AllowAll");
+
+app.UseRouting();
+
+app.UseHttpMetrics(options =>
+{
+    options.AddCustomLabel("host", context => context.Request.Host.Host);
+});
 
 app.UseAuthorization();
 
+app.MapHealthChecks("/health");
+
+app.MapMetrics("/metrics");
+
 app.MapControllers();
 
+Log.Information("5G Antenna Monitoring Backend Service started successfully");
+
 app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Host terminated unexpectedly");
+}
+finally
+{
+    Log.Information("Server shutting down...");
+    Log.CloseAndFlush();
+}

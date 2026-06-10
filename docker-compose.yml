@@ -6,18 +6,19 @@ services:
     container_name: 5g-antenna-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: antenna_monitoring
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-antenna_monitoring}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      TZ: ${TZ:-Asia/Shanghai}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./database/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - antenna-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d antenna_monitoring"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-antenna_monitoring}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -29,16 +30,19 @@ services:
     restart: unless-stopped
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
-      DOCKER_INFLUXDB_INIT_USERNAME: admin
-      DOCKER_INFLUXDB_INIT_PASSWORD: admin123456
-      DOCKER_INFLUXDB_INIT_ORG: 5g-operator
-      DOCKER_INFLUXDB_INIT_BUCKET: antenna_metrics
-      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: 5g-antenna-monitoring-token-2024
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USER:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD:-admin123456}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:-5g-operator}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET_RAW:-antenna_metrics_raw}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN:-5g-antenna-monitoring-token-2024}
+      TZ: ${TZ:-Asia/Shanghai}
     ports:
-      - "8086:8086"
+      - "${INFLUXDB_PORT:-8086}:8086"
     volumes:
       - influxdb_data:/var/lib/influxdb2
       - influxdb_config:/etc/influxdb2
+      - ./database/influxdb/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+      - ./database/influxdb/tasks:/etc/influxdb/tasks:ro
     networks:
       - antenna-network
     healthcheck:
@@ -46,23 +50,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 45s
 
   mosquitto:
     image: eclipse-mosquitto:2.0
     container_name: 5g-antenna-mosquitto
     restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "${MQTT_PORT:-1883}:1883"
+      - "${MQTT_WS_PORT:-9001}:9001"
     volumes:
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
-      - ./database/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./database/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./database/mosquitto/passwordfile:/mosquitto/config/passwordfile:ro
     networks:
       - antenna-network
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t 'test' -m 'healthcheck' -u antenna_admin -P mqtt_password_2024 || exit 1"]
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t '$$SYS/health' -m 'ok' -u ${MQTT_USER:-antenna_admin} -P ${MQTT_PASSWORD:-mqtt_password_2024} || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -75,23 +82,32 @@ services:
     container_name: 5g-antenna-backend
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "${BACKEND_PORT:-5000}:5000"
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       ASPNETCORE_URLS: http://0.0.0.0:5000
-      ConnectionStrings__PostgreSQL: Host=postgres;Port=5432;Database=antenna_monitoring;Username=postgres;Password=postgres;Pooling=true;
+      TZ: ${TZ:-Asia/Shanghai}
+      ConnectionStrings__PostgreSQL: Host=postgres;Port=5432;Database=${POSTGRES_DB:-antenna_monitoring};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres};Pooling=true;
       ConnectionStrings__InfluxDB: http://influxdb:8086
       InfluxDB__Url: http://influxdb:8086
-      InfluxDB__Token: 5g-antenna-monitoring-token-2024
-      InfluxDB__Org: 5g-operator
-      InfluxDB__Buckets__Metrics: antenna_metrics
-      InfluxDB__Buckets__Calibration: antenna_calibration
-      InfluxDB__Buckets__Diagnosis: antenna_diagnosis
+      InfluxDB__Token: ${INFLUXDB_TOKEN:-5g-antenna-monitoring-token-2024}
+      InfluxDB__Org: ${INFLUXDB_ORG:-5g-operator}
+      InfluxDB__Buckets__MetricsRaw: ${INFLUXDB_BUCKET_RAW:-antenna_metrics_raw}
+      InfluxDB__Buckets__Metrics1h: ${INFLUXDB_BUCKET_1H:-antenna_metrics_1h}
+      InfluxDB__Buckets__Metrics24h: ${INFLUXDB_BUCKET_24H:-antenna_metrics_24h}
+      InfluxDB__Buckets__Calibration: ${INFLUXDB_BUCKET_CALIBRATION:-antenna_calibration}
+      InfluxDB__Buckets__Diagnosis: ${INFLUXDB_BUCKET_DIAGNOSIS:-antenna_diagnosis}
       MQTT__Broker: mosquitto
-      MQTT__Port: 1883
+      MQTT__Port: ${MQTT_PORT:-1883}
       MQTT__ClientId: antenna-monitoring-service-docker
-      MQTT__UserName: antenna_admin
-      MQTT__Password: mqtt_password_2024
+      MQTT__UserName: ${MQTT_USER:-antenna_admin}
+      MQTT__Password: ${MQTT_PASSWORD:-mqtt_password_2024}
+      ECPRI__ListenPort: 50000
+      ECPRI__BufferSize: 65536
+      ECPRI__MaxConnections: 200
+      Calibration__IntervalMinutes: ${CALIBRATION_INTERVAL:-5}
+      Diagnosis__IntervalMinutes: ${DIAGNOSIS_INTERVAL:-5}
+      Serilog__MinimumLevel__Default: ${LOG_LEVEL:-Information}
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,6 +115,8 @@ services:
         condition: service_healthy
       mosquitto:
         condition: service_healthy
+    volumes:
+      - backend_logs:/app/logs
     networks:
       - antenna-network
     healthcheck:
@@ -115,9 +133,10 @@ services:
     container_name: 5g-antenna-frontend
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "${FRONTEND_PORT:-5173}:80"
     environment:
-      VITE_API_BASE_URL: http://localhost:5000/api
+      TZ: ${TZ:-Asia/Shanghai}
+      VITE_API_BASE_URL: http://localhost:${BACKEND_PORT:-5000}/api
     depends_on:
       backend:
         condition: service_healthy
@@ -127,6 +146,106 @@ services:
       test: ["CMD-SHELL", "curl -f http://localhost:80 || exit 1"]
       interval: 30s
       timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  ecpri-simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: 5g-antenna-ecpri-simulator
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      SIM_PROTOCOL: ${SIM_PROTOCOL:-http}
+      SIM_API_BASE: http://backend:${BACKEND_PORT:-5000}
+      SIM_TCP_HOST: backend
+      SIM_TCP_PORT: 5001
+      SIM_MQTT_HOST: mosquitto
+      SIM_MQTT_PORT: ${MQTT_PORT:-1883}
+      SIM_MQTT_USERNAME: ${MQTT_USER:-antenna_admin}
+      SIM_MQTT_PASSWORD: ${MQTT_PASSWORD:-mqtt_password_2024}
+      SIM_INTERVAL: ${SIM_INTERVAL:-300}
+      SIM_STATION_COUNT: ${SIM_STATION_COUNT:-200}
+      SIM_CHANNEL_COUNT: ${SIM_CHANNEL_COUNT:-64}
+      SIM_ARRAY_ROWS: ${SIM_ARRAY_ROWS:-8}
+      SIM_ARRAY_COLS: ${SIM_ARRAY_COLS:-8}
+      SIM_INJECT_ANOMALIES: ${SIM_INJECT_ANOMALIES:-true}
+      SIM_DYNAMIC_ANOMALIES: ${SIM_DYNAMIC_ANOMALIES:-true}
+      SIM_ANOMALY_INTERVAL: ${SIM_ANOMALY_INTERVAL:-60}
+      SIM_AMP_BIAS_MIN: ${SIM_AMP_BIAS_MIN:--0.3}
+      SIM_AMP_BIAS_MAX: ${SIM_AMP_BIAS_MAX:-0.3}
+      SIM_PHASE_BIAS_MIN: ${SIM_PHASE_BIAS_MIN:--0.5}
+      SIM_PHASE_BIAS_MAX: ${SIM_PHASE_BIAS_MAX:-0.5}
+      SIM_THROTTLE: ${SIM_THROTTLE:-0.01}
+      SIM_METRICS_PORT: ${SIM_METRICS_PORT:-8000}
+      SIM_ONCE: ${SIM_ONCE:-false}
+      SIM_VERBOSE: ${SIM_VERBOSE:-false}
+    ports:
+      - "${SIM_METRICS_PORT:-8000}:8000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - simulator_logs:/app/logs
+    networks:
+      - antenna-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: 5g-antenna-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    networks:
+      - antenna-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: 5g-antenna-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin123}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./monitoring/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+      - influxdb
+    networks:
+      - antenna-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
       retries: 3
       start_period: 30s
 
@@ -140,6 +259,14 @@ volumes:
   mosquitto_data:
     driver: local
   mosquitto_log:
+    driver: local
+  backend_logs:
+    driver: local
+  simulator_logs:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
     driver: local
 
 networks:

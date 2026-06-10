@@ -324,4 +324,17 @@ public class InfluxDBRepository : IInfluxDBRepository
     {
         return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
     }
+
+    public async Task<bool> CheckHealthAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var ping = await _client.PingAsync(cancellationToken);
+            return ping;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }

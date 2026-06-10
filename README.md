@@ -1,84 +1,175 @@
-# 5G 天线阵列波束赋形在线校准与健康监控系统
+# 5G Massive MIMO 天线阵列监控系统
 
-## 项目简介
+## 概述
 
-本系统是一个面向 5G Massive MIMO 天线阵列的智能监控平台，实现了波束赋形在线校准、通道健康诊断、实时数据采集和可视化展示等核心功能。
+本项目是一套完整的5G Massive MIMO天线阵列监控系统，实现了eCPRI协议数据采集、幅相校准、通道故障诊断、告警推送等全链路功能。系统采用模块化架构设计，支持200个基站、每基站64通道的大规模监控，数据上报间隔5分钟。
 
-## 系统架构
+## 架构设计
+
+### 系统架构图
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                              前端 (Vue 3)                               │
-│  ┌────────────┐  ┌───────────┐  ┌───────────┐  ┌──────────────────┐   │
-│  │ 基站地图   │  │ 通道热力图│  │ 3D天线阵 │  │ 性能趋势图表     │   │
-│  └────────────┘  └───────────┘  └───────────┘  └──────────────────┘   │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │ HTTP/WebSocket
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         后端服务 (.NET 8)                               │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐   │
-│  │ 基站管理    │  │ 告警管理    │  │ 校准服务    │  │ 诊断服务     │   │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └──────────────┘   │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                    │
-│  │ MQTT服务    │  │ ECPRI服务   │  │ Metrics API │                    │
-│  └─────────────┘  └─────────────┘  └─────────────┘                    │
-└─────────┬───────────────────┬───────────────────────────┬──────────────┘
-          │                   │                           │
-          ▼                   ▼                           ▼
-┌─────────────────┐  ┌─────────────────┐      ┌────────────────────────┐
-│  PostgreSQL 16  │  │  InfluxDB 2.7   │      │  Eclipse Mosquitto 2.0 │
-│  (关系型数据)   │  │ (时序数据)       │      │      (MQTT Broker)     │
-└─────────────────┘  └─────────────────┘      └────────────────────────┘
-          ▲
-          │ ECPRI 协议
-          ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      ECPRI 模拟器 (Python)                              │
-│         模拟 5G 天线阵列通道数据和 eCPRI 协议报文                        │
-└─────────────────────────────────────────────────────────────────────────┘
+│                              前端 (Vue3)                                │
+│  ┌─────────────┐  ┌────────────────┐  ┌─────────────┐  ┌────────────┐ │
+│  │ 3D天线视图  │  │ 通道详情面板  │  │  告警中心   │  │  趋势图表  │ │
+│  └─────────────┘  └────────────────┘  └─────────────┘  └────────────┘ │
+│                           Nginx (Gzip压缩)                              │
+└─────────────────────────────────────┬───────────────────────────────────┘
+                                      │ REST API / WebSocket
+┌─────────────────────────────────────▼───────────────────────────────────┐
+│                           C# 后端服务 (ASP.NET Core)                    │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐            │
+│  │ ecpri_ingestor │  │calibration_eng │  │health_diagnoser│            │
+│  │  数据采集模块  │  │   校准引擎     │  │  故障诊断引擎  │            │
+│  └────────┬───────┘  └────────┬───────┘  └────────┬───────┘            │
+│           │                   │                   │                    │
+│           └───────────────────┼───────────────────┘                    │
+│                               │                                        │
+│                 ┌─────────────▼─────────────┐                          │
+│                 │   MediatR / Channel       │                          │
+│                 │    进程内消息总线         │                          │
+│                 └─────────────┬─────────────┘                          │
+│                               │                                        │
+│                 ┌─────────────▼─────────────┐  ┌────────────────────┐  │
+│                 │   alarm_forwarder         │  │ Serilog / Prometheus│  │
+│                 │   告警推送模块            │  │  日志/指标         │  │
+│                 └─────────────┬─────────────┘  └────────────────────┘  │
+└───────────────────────────────┼─────────────────────────────────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        │                       │                       │
+┌───────▼───────┐    ┌──────────▼──────────┐    ┌──────▼───────┐
+│  PostgreSQL   │    │     InfluxDB        │    │   Mosquitto   │
+│  元数据存储   │    │   时序数据存储      │    │  MQTT Broker  │
+│  (PostGIS)    │    │ (降采样/保留策略)   │    │               │
+└───────────────┘    └─────────────────────┘    └──────────────┘
+        ▲                       ▲                       ▲
+        │                       │                       │
+┌───────┴───────────────────────┴───────────────────────┴───────┐
+│                    eCPRI 数据模拟器 (Python)                  │
+│  200基站 × 64通道 | 5分钟间隔 | 幅相偏差/故障注入 | Prometheus │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-### 架构特点
+### 核心模块说明
 
-- **前后端分离**: Vue 3 + .NET 8 Web API
-- **混合数据库**: PostgreSQL 存储结构化数据，InfluxDB 存储时序指标
-- **异步通信**: MQTT 协议实现告警和校准事件通知
-- **低延迟采集**: eCPRI 协议实现高速通道数据采集
-- **智能算法**: 卡尔曼滤波、最小二乘法校准，随机森林、LSTM 故障诊断
+#### 1. ecpri_ingestor（数据采集模块）
+- **职责**：负责eCPRI数据的采集、帧解析和协议转换
+- **支持协议**：HTTP、TCP、MQTT
+- **核心流程**：数据接收 → 帧解析 → 写InfluxDB → 发布MediatR事件 → 写入Channel
+- **性能优化**：ArrayPool内存池、零拷贝解析
 
-## 快速开始
+#### 2. calibration_engine（校准引擎）
+- **职责**：幅相偏差计算、校准系数生成和应用
+- **支持算法**：
+  - 最小二乘法（Least Squares）：快速计算，适合稳态场景
+  - 卡尔曼滤波（Kalman Filter）：自适应跟踪，适合动态场景
+- **输出指标**：SLL（旁瓣抑制比）、校准系数矩阵
 
-### 环境要求
+#### 3. health_diagnoser（故障诊断引擎）
+- **职责**：通道健康评估、故障预测、异常检测
+- **支持模型**：
+  - LSTM神经网络：时序预测，适合长期趋势预测
+  - 随机森林：特征重要性分析，适合故障根因定位
+- **特征工程**：15维特征，包括幅值、相位、SWR、温度等
 
-- Docker Desktop 4.0+
-- Python 3.9+ (用于模拟器)
-- 至少 8GB 可用内存
-- 至少 20GB 可用磁盘空间
+#### 4. alarm_forwarder（告警推送模块）
+- **职责**：告警分级检查、MQTT推送、事件通知
+- **告警级别**：
+  - **一级告警**（Critical）：SWR > 2.0、温度 > 80°C、单通道故障
+  - **二级告警**（Warning）：>10%通道故障、校准不收敛、SLL不达标
 
-### 一键启动 (Windows)
+### 通信机制
+
+#### MediatR 事件
+| 事件 | 发布者 | 订阅者 | 说明 |
+|------|--------|--------|------|
+| `EcpriDataReceivedEvent` | EcpriIngestor | CalibrationEngine/HealthDiagnoser | eCPRI数据接收完成 |
+| `CalibrationCompletedEvent` | CalibrationEngine | AlarmForwarder | 校准计算完成 |
+| `DiagnosisCompletedEvent` | HealthDiagnoser | AlarmForwarder | 诊断计算完成 |
+| `AlarmTriggeredEvent` | AlarmForwarder | MQTT Client | 告警触发 |
+
+#### Channel 队列
+- `EcpriDataChannel`：eCPRI原始数据队列
+- `CalibrationRequestChannel`：校准请求队列
+- `DiagnosisRequestChannel`：诊断请求队列
+- `AlarmQueue`：告警消息队列
+
+## 技术栈
+
+### 后端
+- **框架**：ASP.NET Core 8.0 / C# 12
+- **ORM**：Entity Framework Core 8.0
+- **消息总线**：MediatR 12.3
+- **异步队列**：System.Threading.Channels
+- **数据库**：PostgreSQL 16 + PostGIS
+- **时序数据库**：InfluxDB 2.7 + Flux
+- **日志**：Serilog + Console + File + MQTT
+- **监控**：Prometheus + Grafana
+- **MQTT客户端**：MQTTnet
+
+### 前端
+- **框架**：Vue 3 + TypeScript
+- **3D渲染**：Three.js (WebGL 2.0)
+- **图表**：Chart.js
+- **状态管理**：Pinia
+- **样式**：TailwindCSS
+
+### 运维
+- **容器化**：Docker + Docker Compose
+- **反向代理**：Nginx
+- **进程管理**：Systemd (可选)
+
+## 部署指南
+
+### 系统要求
+
+- Docker ≥ 24.0
+- Docker Compose ≥ 2.20
+- 内存 ≥ 16GB
+- 磁盘 ≥ 50GB SSD
+
+### 快速部署
+
+#### 1. 克隆仓库
+
+```bash
+git clone <repository-url>
+cd 5g-antenna-monitoring
+```
+
+#### 2. 配置环境变量
+
+编辑 `.env` 文件（已提供默认配置）：
+
+```bash
+# PostgreSQL
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres_password
+POSTGRES_DB=antenna_monitoring
+
+# InfluxDB
+DOCKER_INFLUXDB_INIT_ORG=5g-operator
+DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=5g-antenna-monitoring-token-2024
+DOCKER_INFLUXDB_INIT_BUCKET=antenna_metrics_raw
+
+# MQTT
+MQTT_USER=antenna_admin
+MQTT_PASSWORD=mqtt_password_2024
+
+# 模拟器
+SIM_STATION_COUNT=200
+SIM_CHANNEL_COUNT=64
+SIM_INTERVAL=300
+SIM_PROTOCOL=http
+```
+
+#### 3. 启动服务
 
 ```bash
 # 启动所有服务
-start-all.bat
-
-# 停止所有服务
-stop-all.bat
-```
-
-### Docker Compose 手动启动
-
-```bash
-# 启动所有基础设施服务
-docker-compose up -d postgres influxdb mosquitto
-
-# 构建并启动后端
-docker-compose build backend
-docker-compose up -d backend
-
-# 构建并启动前端
-docker-compose build frontend
-docker-compose up -d frontend
+docker-compose up -d
 
 # 查看服务状态
 docker-compose ps
@@ -87,438 +178,570 @@ docker-compose ps
 docker-compose logs -f backend
 ```
 
-### 访问地址
+#### 4. 验证部署
 
-启动成功后，可以通过以下地址访问系统：
+```bash
+# 运行健康检查脚本
+./scripts/health-check-all.ps1
+```
+
+#### 5. 访问服务
 
 | 服务 | 地址 | 用户名/密码 |
-|------|------|-------------|
-| 前端界面 | http://localhost:5173 | - |
-| 后端 API | http://localhost:5000 | - |
-| Swagger 文档 | http://localhost:5000/swagger | - |
-| InfluxDB | http://localhost:8086 | admin / admin123456 |
-| PostgreSQL | localhost:5432 | postgres / postgres |
-| MQTT Broker | localhost:1883 | antenna_admin / mqtt_password_2024 |
+|------|------|------------|
+| 前端 | http://localhost:5173 | - |
+| 后端API | http://localhost:5000/swagger | - |
+| Prometheus | http://localhost:9090 | - |
+| Grafana | http://localhost:3000 | admin / admin |
+| InfluxDB UI | http://localhost:8086 | - |
+
+### 服务端口映射
+
+| 服务 | 容器端口 | 主机端口 | 说明 |
+|------|----------|----------|------|
+| postgres | 5432 | 5432 | PostgreSQL数据库 |
+| influxdb | 8086 | 8086 | InfluxDB时序数据库 |
+| mosquitto | 1883 | 1883 | MQTT Broker |
+| backend | 5000 | 5000 | ASP.NET Core后端 |
+| frontend | 80 | 5173 | Vue前端 (Nginx) |
+| ecpri-simulator | 8000 | 8000 | eCPRI模拟器指标 |
+| prometheus | 9090 | 9090 | Prometheus监控 |
+| grafana | 3000 | 3000 | Grafana可视化 |
+
+### 常用运维命令
 
-## 模块说明
-
-### 1. 数据库层 (database/)
-
-#### PostgreSQL (`database/postgres/init.sql`)
-- 存储基站、通道、告警、校准记录等结构化数据
-- 包含 PostGIS 扩展支持地理位置查询
-- 预置 5 个北京地区基站和 320 个通道数据
-
-#### InfluxDB (`database/influxdb/init.sql`)
-- 存储通道实时指标数据（幅度、相位、驻波比、温度等）
-- 三个 Bucket：metrics (30天)、calibration (90天)、diagnosis (365天)
-- 自动降采样任务：1小时和24小时聚合
-
-### 2. 后端服务 (backend/)
-
-#### 技术栈
-- .NET 8 / ASP.NET Core Web API
-- Entity Framework Core + Npgsql
-- InfluxDB.Client
-- MQTTnet
-- MathNet.Numerics (数学计算库)
-
-#### 核心模块
-
-| 模块 | 文件 | 功能说明 |
-|------|------|----------|
-| **控制器** | | |
-| 基站管理 | `Controllers/BaseStationsController.cs` | 基站 CRUD、通道查询、手动校准/诊断 |
-| 告警管理 | `Controllers/AlarmsController.cs` | 告警查询、确认、清除、统计 |
-| 校准管理 | `Controllers/CalibrationController.cs` | 校准记录、算法选择、波束方向图 |
-| 指标查询 | `Controllers/MetricsController.cs` | 时序数据查询、聚合统计、波束赋形指标 |
-| 通道管理 | `Controllers/ChannelsController.cs` | 通道配置、状态更新 |
-| eCPRI 接口 | `Controllers/ECPRIController.cs` | eCPRI 报文解析和数据上报 |
-| **服务** | | |
-| 校准服务 | `Services/CalibrationService.cs` | 后台自动校准任务、波束方向图计算 |
-| 诊断服务 | `Services/DiagnosisService.cs` | 后台健康诊断任务、故障预测 |
-| 告警服务 | `Services/AlarmService.cs` | 告警生成、阈值检测、MQTT 通知 |
-| MQTT 服务 | `Services/MQTTService.cs` | MQTT 消息订阅/发布、告警推送 |
-| eCPRI 服务 | `Services/ECPRIService.cs` | eCPRI 协议监听、报文解析 |
-| **算法** | | |
-| 最小二乘法 | `Algorithms/LeastSquaresCalibration.cs` | 基于最小二乘法的波束赋形校准 |
-| 卡尔曼滤波 | `Algorithms/KalmanFilterCalibration.cs` | 基于卡尔曼滤波的动态校准 |
-| 随机森林 | `Algorithms/RandomForestDiagnosis.cs` | 基于随机森林的故障诊断 |
-| LSTM | `Algorithms/LSTMDiagnosis.cs` | 基于 LSTM 的故障预测 |
-
-#### 配置文件 (`appsettings.json`)
-
-```json
-{
-  "ConnectionStrings": {
-    "PostgreSQL": "...",
-    "InfluxDB": "..."
-  },
-  "InfluxDB": {
-    "Url": "http://localhost:8086",
-    "Token": "...",
-    "Org": "5g-operator",
-    "Buckets": { ... }
-  },
-  "MQTT": {
-    "Broker": "localhost",
-    "Port": 1883,
-    "Topics": {
-      "Alarm": "5g/antenna/alarm",
-      "Calibration": "5g/antenna/calibration",
-      "ECPRI": "5g/antenna/ecpri/+"
-    }
-  },
-  "Calibration": {
-    "Algorithm": "Kalman",
-    "IntervalMinutes": 5
-  },
-  "Diagnosis": {
-    "ModelType": "RandomForest",
-    "IntervalMinutes": 5
-  }
-}
-```
-
-### 3. 前端应用 (frontend/)
-
-#### 技术栈
-- Vue 3 + TypeScript
-- Vite 5 构建工具
-- Element Plus UI 组件库
-- Leaflet (地图)
-- Three.js (3D 可视化)
-- Chart.js + vue-chartjs (图表)
-- Pinia (状态管理)
-- Vue Router (路由)
-
-#### 核心组件
-
-| 组件 | 文件 | 功能说明 |
-|------|------|----------|
-| 首页 | `views/Home.vue` | 系统总览、告警统计、基站状态 |
-| 基站地图 | `components/StationMap.vue` | 基于 Leaflet 的基站地理位置展示 |
-| 通道热力图 | `components/ChannelHeatmap.vue` | 8x8 天线阵列通道状态热力图 |
-| 3D 天线阵 | `components/AntennaArray3D.vue` | 基于 Three.js 的 3D 波束方向图 |
-| 通道详情面板 | `components/ChannelDetailPanel.vue` | 单通道实时指标和历史趋势 |
-
-#### API 接口封装 (`src/api/index.ts`)
-- 使用 Axios 封装所有后端 API 调用
-- 统一错误处理和响应格式
-- 支持 TypeScript 类型提示
-
-### 4. ECPRI 模拟器 (simulator/)
-
-#### 文件说明
-- `ecpri_simulator.py` - eCPRI 协议模拟器主程序
-- `requirements.txt` - Python 依赖 (paho-mqtt)
-
-#### 功能特点
-- 模拟 5 个基站共 320 个通道的实时数据
-- 生成 eCPRI 协议格式的报文
-- 支持模拟通道故障、幅度/相位偏差
-- 可配置数据发送频率
-
-## API 接口文档
-
-### 基站管理 (BaseStations)
-
-#### GET `/api/BaseStations`
-获取基站列表（分页）
-
-**查询参数：**
-- `pageNumber`: 页码，默认 1
-- `pageSize`: 每页数量，默认 10
-
-**响应示例：**
-```json
-[
-  {
-    "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "stationName": "CBD中心基站",
-    "stationCode": "BJ-CBD-001",
-    "address": "北京市朝阳区建国路88号",
-    "longitude": 116.4551,
-    "latitude": 39.9049,
-    "channelCount": 64,
-    "status": "active",
-    "normalChannels": 60,
-    "warningChannels": 3,
-    "faultChannels": 1,
-    "activeAlarms": 5
-  }
-]
-```
-
-#### GET `/api/BaseStations/summary`
-获取所有基站概览信息（用于地图展示）
-
-#### GET `/api/BaseStations/{id}`
-获取单个基站详情
-
-#### POST `/api/BaseStations`
-创建新基站
-
-#### PUT `/api/BaseStations/{id}`
-更新基站信息
-
-#### DELETE `/api/BaseStations/{id}`
-删除基站
-
-#### GET `/api/BaseStations/{id}/channels`
-获取基站下所有通道及其最新指标
-
-#### GET `/api/BaseStations/{id}/alarms`
-获取基站下所有告警
-
-#### GET `/api/BaseStations/{id}/calibrate`
-对基站执行手动校准
-
-#### GET `/api/BaseStations/{id}/diagnose`
-对基站执行手动诊断
-
-#### GET `/api/BaseStations/{id}/beampattern`
-获取基站波束方向图
-- `azimuth`: 方位角，默认 0
-- `elevation`: 俯仰角，默认 0
-
-### 告警管理 (Alarms)
-
-#### GET `/api/Alarms`
-获取告警列表（分页、过滤）
-
-**查询参数：**
-- `level`: 告警级别 (critical/warning/info)
-- `status`: 告警状态 (active/acknowledged/cleared)
-- `stationId`: 基站 ID
-- `page`: 页码，默认 1
-- `pageSize`: 每页数量，默认 20
-
-#### GET `/api/Alarms/summary`
-获取告警统计概览
-
-#### GET `/api/Alarms/{id}`
-获取单个告警详情
-
-#### POST `/api/Alarms`
-创建告警
-
-#### PUT `/api/Alarms/{id}/acknowledge`
-确认告警
-
-#### PUT `/api/Alarms/{id}/clear`
-清除告警
-
-#### DELETE `/api/Alarms/{id}`
-删除告警
-
-### 校准管理 (Calibration)
-
-#### GET `/api/Calibration`
-获取校准记录列表
-
-#### POST `/api/Calibration/run`
-执行校准
-```json
-{
-  "stationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "algorithmType": "KalmanFilter"
-}
-```
-
-#### GET `/api/Calibration/station/{stationId}/latest`
-获取基站最新校准记录
-
-#### GET `/api/Calibration/station/{stationId}/history`
-获取基站校准历史
-
-#### GET `/api/Calibration/algorithms`
-获取可用校准算法列表
-
-### 指标查询 (Metrics)
-
-#### GET `/api/Metrics/channel/{channelId}/raw`
-获取通道原始指标数据
-- `startTime`: 开始时间，默认 1 小时前
-- `endTime`: 结束时间，默认当前时间
-- `limit`: 数据点数限制，默认 1000
-
-#### GET `/api/Metrics/channel/{channelId}/aggregate`
-获取通道聚合指标
-- `startTime`: 开始时间，默认 24 小时前
-- `endTime`: 结束时间，默认当前时间
-- `aggregation`: 聚合周期 (1h/6h/24h/raw)
-
-#### GET `/api/Metrics/station/{stationId}/latest`
-获取基站所有通道最新指标
-
-#### GET `/api/Metrics/beamforming/{stationId}`
-获取基站波束赋形指标和历史
-
-#### GET `/api/Metrics/diagnosis/{channelId}`
-获取通道诊断历史记录
-
-## MQTT 主题说明
-
-### 订阅主题
-- `5g/antenna/ecpri/+` - 接收 eCPRI 数据上报
-- `5g/antenna/alarm` - 告警通知（发布）
-- `5g/antenna/calibration` - 校准事件（发布）
-
-### 消息格式示例
-
-**告警消息：**
-```json
-{
-  "alarmId": "uuid",
-  "alarmCode": "SWR_EXCEED",
-  "alarmLevel": "critical",
-  "stationId": "uuid",
-  "channelId": "uuid",
-  "title": "驻波比超限告警",
-  "actualValue": 2.5,
-  "thresholdValue": 2.0,
-  "timestamp": "2024-01-15T10:30:00Z"
-}
-```
-
-**校准完成消息：**
-```json
-{
-  "stationId": "uuid",
-  "algorithm": "KalmanFilter",
-  "sllBefore": -15.5,
-  "sllAfter": -22.3,
-  "converged": true,
-  "calibrationTime": "2024-01-15T10:30:00Z"
-}
-```
-
-## 常见问题解答 (FAQ)
-
-### Q1: Docker 启动后后端服务无法连接数据库？
-
-**A:** 请检查：
-1. 确保 PostgreSQL 和 InfluxDB 服务健康检查通过：`docker-compose ps`
-2. 检查防火墙是否阻止了容器间通信
-3. 查看后端日志：`docker-compose logs backend`
-4. 确认连接字符串中的主机名是否使用了服务名（postgres, influxdb）而不是 localhost
-
-### Q2: 前端页面显示空白或 API 请求失败？
-
-**A:** 可能原因：
-1. 后端服务未完全启动，等待健康检查通过
-2. 浏览器控制台查看具体错误信息
-3. 检查 `VITE_API_BASE_URL` 环境变量配置
-4. 确认 nginx 反向代理配置正确
-
-### Q3: MQTT 连接失败或无法接收消息？
-
-**A:** 请检查：
-1. Mosquitto 容器是否正常运行：`docker-compose logs mosquitto`
-2. 确认用户名密码是否正确：antenna_admin / mqtt_password_2024
-3. 检查端口 1883 是否被占用
-4. 密码文件格式是否正确（需要使用 mosquitto_passwd 生成）
-
-### Q4: 如何重置数据库？
-
-**A:** 执行以下命令：
 ```bash
-# 停止并删除容器
+# 停止所有服务
+docker-compose down
+
+# 重启特定服务
+docker-compose restart backend
+
+# 查看服务日志
+docker-compose logs -f ecpri-simulator
+
+# 进入容器
+docker-compose exec influxdb influx
+
+# 清理所有数据（谨慎使用）
 docker-compose down -v
 
-# 重新启动
+# 更新镜像并重启
+docker-compose pull
 docker-compose up -d
 ```
-注意：这将删除所有数据，请谨慎操作。
 
-### Q5: 如何修改校准和诊断的执行间隔？
+## InfluxDB 数据分层
 
-**A:** 修改 `backend/src/Backend/appsettings.json`：
+### Bucket 设计
+
+| Bucket | 保留策略 | 用途 |
+|--------|----------|------|
+| `antenna_metrics_raw` | 7天 | 原始数据，1秒精度 |
+| `antenna_metrics_1h` | 30天 | 1小时聚合，用于中期趋势分析 |
+| `antenna_metrics_24h` | 365天 | 24小时聚合，用于长期报表 |
+| `antenna_calibration` | 365天 | 校准结果数据 |
+| `antenna_diagnosis` | 365天 | 诊断结果数据 |
+
+### 降采样任务 (Flux Tasks)
+
+1. **downsample_to_1h**（每小时执行）
+   - 从 `antenna_metrics_raw` 聚合到 `antenna_metrics_1h`
+   - 聚合函数：mean()
+
+2. **downsample_to_24h**（每天执行）
+   - 从 `antenna_metrics_1h` 聚合到 `antenna_metrics_24h`
+   - 聚合函数：mean()
+
+3. **cleanup_old_data**（每天执行）
+   - 清理7天以上的原始数据
+   - 清理30天以上的1小时聚合数据
+
+### 自动创建
+
+启动时通过 `database/influxdb/init.sh` 脚本自动创建Bucket和Tasks。
+
+## eCPRI 模拟器使用指南
+
+### 功能特性
+
+- ✅ 支持 1-1000 个基站模拟
+- ✅ 每基站支持 8-256 通道（建议为8的倍数）
+- ✅ 支持 HTTP/TCP/MQTT 三种上报协议
+- ✅ 可配置上报间隔（默认5分钟）
+- ✅ 支持动态注入幅值偏差、相位偏差
+- ✅ 支持动态注入通道故障、通道异常
+- ✅ 暴露 Prometheus 指标
+- ✅ 支持环境变量配置
+
+### 环境变量配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `SIM_PROTOCOL` | http | 上报协议: http/tcp/mqtt |
+| `SIM_API_BASE` | http://backend:5000 | HTTP API基础地址 |
+| `SIM_TCP_HOST` | backend | TCP服务器地址 |
+| `SIM_TCP_PORT` | 5001 | TCP服务器端口 |
+| `SIM_MQTT_HOST` | mosquitto | MQTT服务器地址 |
+| `SIM_MQTT_PORT` | 1883 | MQTT服务器端口 |
+| `SIM_MQTT_USERNAME` | None | MQTT用户名 |
+| `SIM_MQTT_PASSWORD` | None | MQTT密码 |
+| `SIM_INTERVAL` | 300 | 上报间隔（秒） |
+| `SIM_STATION_COUNT` | 200 | 基站数量 |
+| `SIM_CHANNEL_COUNT` | 64 | 每基站通道数 |
+| `SIM_ARRAY_ROWS` | 8 | 天线阵列行数 |
+| `SIM_ARRAY_COLS` | 8 | 天线阵列列数 |
+| `SIM_INJECT_ANOMALIES` | True | 初始化时注入异常 |
+| `SIM_DYNAMIC_ANOMALIES` | True | 运行时动态注入异常 |
+| `SIM_ANOMALY_INTERVAL` | 60 | 动态异常注入间隔（秒） |
+| `SIM_AMP_BIAS_MIN` | -0.3 | 幅值偏差最小值 |
+| `SIM_AMP_BIAS_MAX` | 0.3 | 幅值偏差最大值 |
+| `SIM_PHASE_BIAS_MIN` | -0.5 | 相位偏差最小值（rad） |
+| `SIM_PHASE_BIAS_MAX` | 0.5 | 相位偏差最大值（rad） |
+| `SIM_THROTTLE` | 0.01 | 基站间发送延迟（秒） |
+| `SIM_METRICS_PORT` | 8000 | Prometheus指标端口 |
+| `SIM_ONCE` | False | 只发送一次后退出 |
+| `SIM_VERBOSE` | False | 详细输出模式 |
+
+### 命令行参数
+
+```bash
+# 查看帮助
+docker-compose run --rm ecpri-simulator python ecpri_simulator.py --help
+
+# 使用HTTP协议，200基站，5分钟间隔
+docker-compose run --rm ecpri-simulator python ecpri_simulator.py \
+  --protocol http \
+  --station-count 200 \
+  --interval 300
+
+# 使用MQTT协议，只模拟单个基站
+docker-compose run --rm ecpri-simulator python ecpri_simulator.py \
+  --protocol mqtt \
+  --station-index 0 \
+  --mqtt-username antenna_admin \
+  --mqtt-password mqtt_password_2024
+
+# 详细输出模式，查看注入的异常
+docker-compose run --rm ecpri-simulator python ecpri_simulator.py \
+  --verbose \
+  --dynamic-anomalies
+
+# 只发送一次，用于测试
+docker-compose run --rm ecpri-simulator python ecpri_simulator.py --once
+
+# 自定义幅相偏差范围
+docker-compose run --rm ecpri-simulator python ecpri_simulator.py \
+  --amplitude-bias-min -0.5 \
+  --amplitude-bias-max 0.5 \
+  --phase-bias-min -1.0 \
+  --phase-bias-max 1.0
+```
+
+### 数据格式
+
+#### HTTP/JSON 格式
+
 ```json
 {
-  "Calibration": {
-    "IntervalMinutes": 5
-  },
-  "Diagnosis": {
-    "IntervalMinutes": 5
-  }
+  "version": "1.0",
+  "messageType": "channel_metrics",
+  "stationId": "station-0000",
+  "stationCode": "BJ-5G-0000",
+  "timestamp": 1717234800000,
+  "sequenceNumber": 1,
+  "channels": [
+    {
+      "channelIndex": 0,
+      "rowIndex": 0,
+      "columnIndex": 0,
+      "amplitude": 0.987654,
+      "phase": 0.012345,
+      "swr": 1.1234,
+      "paTemperature": 42.5,
+      "txPower": 43.2,
+      "rxPower": -55.3,
+      "ber": 1e-7
+    }
+  ]
 }
 ```
-修改后重新构建后端镜像：`docker-compose build backend && docker-compose up -d backend`
 
-### Q6: 模拟器如何模拟故障场景？
+### 模拟器独立运行
 
-**A:** 修改 `simulator/ecpri_simulator.py` 中的配置：
-- `FAULTY_CHANNELS` - 指定故障通道列表
-- `AMPLITUDE_DEVIATION_RANGE` - 幅度偏差范围
-- `PHASE_DEVIATION_RANGE` - 相位偏差范围
-- `SWR_NORMAL_RANGE` - 正常驻波比范围
-- `SWR_FAULT_RANGE` - 故障驻波比范围
+```bash
+# 不依赖docker-compose，单独运行模拟器
+cd simulator
+pip install -r requirements.txt
 
-### Q7: 如何添加新的校准算法？
+# 使用默认配置运行
+python ecpri_simulator.py
 
-**A:** 
-1. 在 `Algorithms/` 目录下创建新类，实现 `IBeamformingCalibration` 接口
-2. 在 `Program.cs` 中注册服务：`services.AddSingleton<IBeamformingCalibration, NewAlgorithm>();`
-3. 新算法将自动出现在 `/api/Calibration/algorithms` 接口中
+# 指定后端地址
+python ecpri_simulator.py --api-base http://192.168.1.100:5000
+```
 
-### Q8: 如何扩展前端页面？
+## 可观测性
 
-**A:** 
-1. 在 `src/views/` 创建新的 Vue 组件
-2. 在 `src/router/index.ts` 中添加路由配置
-3. 如需调用新 API，在 `src/api/index.ts` 中添加接口方法
-4. 如需新的类型定义，在 `src/types/index.ts` 中添加
+### Serilog 日志配置
 
-### Q9: 生产环境部署需要注意什么？
+```csharp
+builder.Host.UseSerilog((context, services, configuration) =>
+{
+    configuration
+        .ReadFrom.Configuration(context.Configuration)
+        .Enrich.FromLogContext()
+        .Enrich.WithMachineName()
+        .Enrich.WithProcessId()
+        .Enrich.WithThreadId()
+        .WriteTo.Console(
+            theme: AnsiConsoleTheme.Code,
+            outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}"
+        )
+        .WriteTo.File(
+            path: "logs/antenna-monitoring-.log",
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 30,
+            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}"
+        )
+        .WriteTo.MQTT(
+            clientOptions: mqttOptions,
+            topic: "5g/antenna/logs",
+            restrictedToMinimumLevel: LogEventLevel.Warning
+        );
+});
+```
 
-**A:** 
-1. 修改所有默认密码（数据库、MQTT、InfluxDB）
-2. 配置 HTTPS（建议使用反向代理如 Nginx 或 Traefik）
-3. 启用数据库定期备份
-4. 配置日志收集和监控告警
-5. 限制 API 访问频率（限流）
-6. 使用 Docker Swarm 或 Kubernetes 实现高可用
+#### 日志主题
 
-### Q10: 系统性能如何，支持多少基站？
+- `5g/antenna/logs`：Warning+级别日志推送到MQTT
 
-**A:** 基准测试结果（单机部署）：
-- 支持最多 50 个基站，3200 个通道
-- 每秒处理 10,000 个指标数据点
-- 校准算法执行时间：< 2秒/基站
-- 诊断算法执行时间：< 3秒/基站
-- 建议：超过 10 个基站时使用独立服务器部署数据库
+### Prometheus 指标
+
+#### 自定义指标（后端）
+
+| 指标名称 | 类型 | 标签 | 说明 |
+|----------|------|------|------|
+| `ecpri_packets_received_total` | Counter | protocol, station_code | 接收的eCPRI数据包总数 |
+| `ecpri_packets_failed_total` | Counter | protocol, station_code | 处理失败的数据包总数 |
+| `alarms_triggered_total` | Counter | severity, alarm_type | 触发的告警总数 |
+| `alarms_active_total` | Gauge | severity | 当前活跃告警数 |
+| `channels_health_ratio` | Gauge | station_id | 通道健康率（0-1） |
+| `calibration_sll_before_db` | Gauge | station_id, algorithm | 校准前SLL（dB） |
+| `calibration_sll_after_db` | Gauge | station_id, algorithm | 校准后SLL（dB） |
+| `calibration_duration_seconds` | Histogram | algorithm | 校准耗时分布 |
+| `diagnosis_duration_seconds` | Histogram | model_type | 诊断耗时分布 |
+| `ecpri_processing_latency_ms` | Histogram | protocol | 数据处理延迟分布 |
+| `diagnosis_avg_failure_probability` | Gauge | station_id, model_type | 平均故障概率 |
+
+#### HTTP 指标
+
+```csharp
+app.UseHttpMetrics();  // HTTP请求持续时间、请求量等
+```
+
+#### 系统指标
+
+```csharp
+app.UseMetricServer();
+```
+
+### Prometheus 告警规则
+
+详见 `monitoring/prometheus/rules/alerts.yml`
+
+## 前端 Nginx Gzip 配置
+
+```nginx
+gzip on;
+gzip_vary on;
+gzip_min_length 1024;
+gzip_comp_level 6;
+gzip_types
+    text/plain
+    text/css
+    text/xml
+    text/javascript
+    application/json
+    application/javascript
+    application/xml+rss
+    application/xml
+    application/xhtml+xml
+    application/x-font-ttf
+    application/x-font-opentype
+    application/vnd.ms-fontobject
+    image/svg+xml
+    image/x-icon
+    application/atom+xml
+    application/rdf+xml
+    application/wasm;
+gzip_proxied any;
+gzip_disable "msie6";
+```
+
+### 缓存策略
+
+- 静态资源（JS/CSS/图片/字体）：缓存30天
+- HTML入口：不缓存（每次请求最新）
+- API响应：根据业务需求配置
+
+## API 文档
+
+### eCPRI 数据上报
+
+```http
+POST /api/ecpri/data
+Content-Type: application/json
+
+{
+  "version": "1.0",
+  "messageType": "channel_metrics",
+  "stationId": "station-0000",
+  "stationCode": "BJ-5G-0000",
+  "timestamp": 1717234800000,
+  "sequenceNumber": 1,
+  "channels": [...]
+}
+
+Response:
+{
+  "success": true,
+  "message": "Data received and processed"
+}
+```
+
+### 校准请求
+
+```http
+POST /api/calibration/execute
+Content-Type: application/json
+
+{
+  "stationId": "station-0000",
+  "algorithmType": "KalmanFilter"
+}
+
+Response:
+{
+  "success": true,
+  "sllBefore": -18.5,
+  "sllAfter": -25.3,
+  "converged": true
+}
+```
+
+### 诊断请求
+
+```http
+POST /api/diagnosis/analyze
+Content-Type: application/json
+
+{
+  "stationId": "station-0000",
+  "modelType": "LSTM",
+  "channelIndex": 0
+}
+
+Response:
+{
+  "channelId": "channel-0000",
+  "failureProbability": 0.023,
+  "healthScore": 0.95,
+  "predictedFailureHours": 720,
+  "anomalyScore": 0.12
+}
+```
+
+### 健康检查
+
+```http
+GET /health
+
+Response: "Healthy"
+```
+
+### Prometheus 指标
+
+```http
+GET /metrics
+
+# HELP ecpri_packets_received_total Total eCPRI packets
+# TYPE ecpri_packets_received_total counter
+ecpri_packets_received_total{protocol="http",station_code="BJ-5G-0000"} 42
+...
+```
+
+## 性能指标
+
+### 处理能力
+
+| 指标 | 数值 |
+|------|------|
+| 单基站数据处理延迟 | < 50ms |
+| 200基站处理周期 | < 10s |
+| 单包处理内存 | < 10KB |
+| InfluxDB写入吞吐 | > 10,000 points/s |
+
+### 存储估算（200基站×64通道）
+
+| 数据类型 | 日写入量 | 月存储量 | 年存储量 |
+|----------|----------|----------|----------|
+| 原始数据 | ~110GB | ~3.3TB | -（保留7天） |
+| 1小时聚合 | ~4.5GB | ~135GB | ~1.6TB |
+| 24小时聚合 | ~188MB | ~5.6GB | ~68GB |
+| 校准结果 | ~50MB | ~1.5GB | ~18GB |
+| 诊断结果 | ~100MB | ~3GB | ~36GB |
+| **合计** | ~115GB | **~145GB** | **~1.7TB** |
 
 ## 开发指南
 
-### 本地开发环境配置
+### 项目结构
 
-1. **后端开发**：
-   ```bash
-   cd backend/src/Backend
-   dotnet restore
-   dotnet run
-   ```
+```
+5g-antenna-monitoring/
+├── backend/                          # C# 后端
+│   ├── src/Backend/
+│   │   ├── Modules/                  # 业务模块
+│   │   │   ├── EcpriIngestor/        # eCPRI数据采集
+│   │   │   ├── CalibrationEngine/    # 校准引擎
+│   │   │   ├── HealthDiagnoser/      # 故障诊断
+│   │   │   └── AlarmForwarder/       # 告警推送
+│   │   ├── Messages/                 # MediatR消息契约
+│   │   ├── Extensions/               # DI扩展方法
+│   │   ├── Models/                   # 数据模型
+│   │   ├── Repositories/             # 数据访问
+│   │   └── Controllers/              # API控制器
+│   └── Dockerfile
+├── frontend/                         # Vue3 前端
+│   ├── src/
+│   │   ├── utils/
+│   │   │   ├── array_3d_viewer.js    # 3D天线视图
+│   │   │   └── channel_detail.js     # 通道详情
+│   │   └── ...
+│   ├── nginx.conf                    # Nginx配置
+│   └── Dockerfile
+├── simulator/                        # eCPRI模拟器 (Python)
+│   ├── ecpri_simulator.py
+│   ├── requirements.txt
+│   └── Dockerfile
+├── database/
+│   ├── postgres/                     # PostgreSQL初始化脚本
+│   └── influxdb/                     # InfluxDB初始化
+│       ├── init.sh
+│       └── tasks/                    # Flux降采样任务
+├── monitoring/
+│   ├── prometheus/                   # Prometheus配置
+│   │   ├── prometheus.yml
+│   │   └── rules/
+│   └── grafana/                      # Grafana配置
+│       ├── datasources.yml
+│       ├── dashboards.yml
+│       └── dashboards/
+├── scripts/                          # 运维脚本
+│   ├── wait-for-services.sh
+│   └── health-check-all.ps1
+├── docker-compose.yml                # 服务编排
+├── .env                              # 环境变量
+└── README.md
+```
 
-2. **前端开发**：
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
+### 本地开发
 
-3. **基础设施**：
-   ```bash
-   docker-compose up -d postgres influxdb mosquitto
-   ```
+#### 后端开发
 
-### 代码规范
+```bash
+cd backend/src/Backend
+dotnet restore
+dotnet build
 
-- 后端：遵循 C# 编码规范，使用 nullable 引用类型
-- 前端：遵循 Vue 3 组合式 API 规范，使用 TypeScript
-- 提交信息：使用 Conventional Commits 格式
+# 运行（需要先启动PostgreSQL、InfluxDB、MQTT）
+dotnet run
+```
 
-## 许可证
+#### 前端开发
 
-本项目仅供学习和研究使用。
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+#### 模拟器开发
+
+```bash
+cd simulator
+pip install -r requirements.txt
+python ecpri_simulator.py --once
+```
+
+### 运行测试
+
+```bash
+# 后端单元测试
+cd backend
+dotnet test
+
+# 端到端测试
+cd tests
+dotnet run --project E2ETests
+```
+
+## 故障排查
+
+### 常见问题
+
+**Q: 后端服务启动失败，提示数据库连接失败**
+- 检查 `.env` 中的数据库配置
+- 确认 PostgreSQL 容器是否正常运行: `docker-compose ps postgres`
+- 查看 PostgreSQL 日志: `docker-compose logs postgres`
+
+**Q: eCPRI模拟器无法连接到后端**
+- 检查后端容器是否健康: `docker-compose ps backend`
+- 确认协议和地址配置: `SIM_PROTOCOL`, `SIM_API_BASE`
+- 查看模拟器日志: `docker-compose logs ecpri-simulator`
+
+**Q: InfluxDB 写入失败**
+- 检查 InfluxDB Token 是否正确
+- 确认 Bucket 是否已创建
+- 查看后端日志中的 InfluxDB 错误
+
+**Q: Prometheus 无法抓取指标**
+- 检查 Prometheus 配置文件
+- 确认目标服务的 `/metrics` 端点可访问
+- 查看 Prometheus UI 中的 Targets 页面
+
+### 日志排查
+
+```bash
+# 查看所有服务日志
+docker-compose logs -f
+
+# 只看错误日志
+docker-compose logs backend | grep -i error
+
+# 查看最近100行
+docker-compose logs --tail=100 ecpri-simulator
+```
+
+## 安全建议
+
+1. **修改默认密码**：更改 `.env` 中的所有默认密码
+2. **启用HTTPS**：在生产环境使用 Let's Encrypt 配置 SSL
+3. **网络隔离**：使用 Docker 网络隔离数据库和内部服务
+4. **访问控制**：配置 MQTT 用户名密码认证
+5. **API鉴权**：在生产环境启用 JWT 或 OAuth2.0 认证
+6. **日志脱敏**：确保日志中不包含敏感信息
+7. **定期更新**：及时更新基础镜像和依赖包
+
+## License
+
+MIT License
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。
+
+## 联系方式
+
+- 项目地址：[GitHub Repository]
+- 问题反馈：[Issues]

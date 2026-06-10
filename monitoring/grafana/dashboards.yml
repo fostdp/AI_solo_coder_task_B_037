@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: '5G Antenna Monitoring'
+    orgId: 1
+    folder: '5G Antenna'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true
