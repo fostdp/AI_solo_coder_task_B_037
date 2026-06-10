@@ -1,6 +1,10 @@
 using MediatR;
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Modules.AlarmForwarder;
+using AntennaMonitoring.Modules.DeformationMonitor;
+using AntennaMonitoring.Modules.CoSiteInterferenceAnalyzer;
+using AntennaMonitoring.Modules.PaEfficiencyEvaluator;
+using AntennaMonitoring.Modules.SpectrumScanner;
 using AntennaMonitoring.Repositories;
 using AntennaMonitoring.Models;
 using Microsoft.Extensions.Logging;
@@ -179,5 +183,322 @@ public class AlarmTriggeredHandler : INotificationHandler<AlarmTriggeredEvent>
             notification.AlarmCode, notification.StationId, notification.AlarmLevel, notification.Severity);
 
         return Task.CompletedTask;
+    }
+}
+
+public class SensorDataReceivedHandler : INotificationHandler<SensorDataReceivedEvent>
+{
+    private readonly ILogger<SensorDataReceivedHandler> _logger;
+    private readonly IDataChannels _channels;
+    private readonly IInfluxDBRepository _influxRepo;
+
+    public SensorDataReceivedHandler(
+        ILogger<SensorDataReceivedHandler> logger,
+        IDataChannels channels,
+        IInfluxDBRepository influxRepo)
+    {
+        _logger = logger;
+        _channels = channels;
+        _influxRepo = influxRepo;
+    }
+
+    public async Task Handle(SensorDataReceivedEvent notification, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _influxRepo.WriteSensorMetricAsync(
+                notification.StationId.ToString(), notification.SensorData, cancellationToken);
+
+            await _channels.SensorDataWriter.WriteAsync(notification.SensorData, cancellationToken);
+
+            _logger.LogDebug(
+                "Sensor data event processed: Station={StationId}, Sensor={SensorType}, Tilt={TiltMag:F2}°, Strain={Strain:F4}",
+                notification.StationId, notification.SensorData.SensorType,
+                notification.SensorData.TiltMagnitude, notification.SensorData.StrainValue);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling sensor data received event for station {StationId}", notification.StationId);
+        }
+    }
+}
+
+public class DeformationAnalyzedHandler : INotificationHandler<DeformationAnalyzedEvent>
+{
+    private readonly ILogger<DeformationAnalyzedHandler> _logger;
+    private readonly IDeformationRecordRepository _deformationRepo;
+    private readonly IAlarmForwarder _alarmForwarder;
+
+    public DeformationAnalyzedHandler(
+        ILogger<DeformationAnalyzedHandler> logger,
+        IDeformationRecordRepository deformationRepo,
+        IAlarmForwarder alarmForwarder)
+    {
+        _logger = logger;
+        _deformationRepo = deformationRepo;
+        _alarmForwarder = alarmForwarder;
+    }
+
+    public async Task Handle(DeformationAnalyzedEvent notification, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var record = new DeformationRecord
+            {
+                Id = Guid.NewGuid(),
+                StationId = notification.StationId,
+                TiltAngleX = notification.Result.TiltAngleX,
+                TiltAngleY = notification.Result.TiltAngleY,
+                TiltMagnitude = notification.Result.TiltMagnitude,
+                StrainValue = notification.Result.StrainValue,
+                CalculatedDisplacementMm = notification.Result.DisplacementMm,
+                StressMpa = notification.Result.StressMpa,
+                DeformationZone = notification.Result.DeformationZone,
+                IsExceedingThreshold = notification.Result.IsExceedingThreshold,
+                BeamCorrectionApplied = notification.Result.BeamCorrectionApplied,
+                CorrectionAngleAzimuth = notification.Result.CorrectionAngleAzimuth,
+                CorrectionAngleElevation = notification.Result.CorrectionAngleElevation,
+                MeasurementTime = notification.Timestamp,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _deformationRepo.AddAsync(record, cancellationToken);
+
+            if (notification.Result.IsExceedingThreshold)
+            {
+                await _alarmForwarder.GenerateAlarmAsync(
+                    notification.StationId,
+                    "DEFORMATION_EXCEEDED",
+                    "deformation",
+                    "high",
+                    0.5,
+                    notification.Result.DisplacementMm,
+                    $"形变超过阈值: {notification.Result.DisplacementMm:F3}mm, 区域: {notification.Result.DeformationZone}",
+                    cancellationToken);
+            }
+
+            _logger.LogInformation(
+                "Deformation analysis processed: Station={StationId}, Displacement={Disp:F3}mm, Exceeded={Exceeded}, Corrected={Corrected}",
+                notification.StationId, notification.Result.DisplacementMm,
+                notification.Result.IsExceedingThreshold, notification.Result.BeamCorrectionApplied);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling deformation analyzed event for station {StationId}", notification.StationId);
+        }
+    }
+}
+
+public class InterferenceAnalyzedHandler : INotificationHandler<InterferenceAnalyzedEvent>
+{
+    private readonly ILogger<InterferenceAnalyzedHandler> _logger;
+    private readonly ICoSiteInterferenceRecordRepository _interferenceRepo;
+    private readonly IInfluxDBRepository _influxRepo;
+    private readonly IAlarmForwarder _alarmForwarder;
+
+    public InterferenceAnalyzedHandler(
+        ILogger<InterferenceAnalyzedHandler> logger,
+        ICoSiteInterferenceRecordRepository interferenceRepo,
+        IInfluxDBRepository influxRepo,
+        IAlarmForwarder alarmForwarder)
+    {
+        _logger = logger;
+        _interferenceRepo = interferenceRepo;
+        _influxRepo = influxRepo;
+        _alarmForwarder = alarmForwarder;
+    }
+
+    public async Task Handle(InterferenceAnalyzedEvent notification, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _influxRepo.WriteInterferenceMetricAsync(
+                notification.StationId.ToString(), notification.Result, cancellationToken);
+
+            var record = new CoSiteInterferenceRecord
+            {
+                Id = Guid.NewGuid(),
+                StationId = notification.StationId,
+                InterferingAntennaId = notification.Result.InterferingAntennaId,
+                InterferingOperator = notification.Result.InterferingOperator,
+                InterferingAntennaType = notification.Result.InterferingAntennaType,
+                DistanceMeters = notification.Result.DistanceMeters,
+                IsolationDb = notification.Result.IsolationDb,
+                CouplingCoefficient = notification.Result.CouplingCoefficient,
+                IsIsolationSufficient = notification.Result.IsIsolationSufficient,
+                InterferenceVectorX = notification.Result.InterferenceVectorX,
+                InterferenceVectorY = notification.Result.InterferenceVectorY,
+                InterferenceVectorZ = notification.Result.InterferenceVectorZ,
+                Recommendation = notification.Result.Recommendation,
+                MeasurementTime = notification.Timestamp,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _interferenceRepo.AddAsync(record, cancellationToken);
+
+            if (!notification.Result.IsIsolationSufficient)
+            {
+                await _alarmForwarder.GenerateAlarmAsync(
+                    notification.StationId,
+                    "INTERFERENCE_ISOLATION_LOW",
+                    "interference",
+                    "medium",
+                    30.0,
+                    notification.Result.IsolationDb,
+                    $"共址隔离度不足: {notification.Result.IsolationDb:F1}dB, 建议: {notification.Result.Recommendation}",
+                    cancellationToken);
+            }
+
+            _logger.LogInformation(
+                "Interference analysis processed: Station={StationId}, Isolation={Iso:F1}dB, Sufficient={Sufficient}",
+                notification.StationId, notification.Result.IsolationDb, notification.Result.IsIsolationSufficient);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling interference analyzed event for station {StationId}", notification.StationId);
+        }
+    }
+}
+
+public class PaEfficiencyEvaluatedHandler : INotificationHandler<PaEfficiencyEvaluatedEvent>
+{
+    private readonly ILogger<PaEfficiencyEvaluatedHandler> _logger;
+    private readonly IPaEfficiencyRecordRepository _efficiencyRepo;
+    private readonly IInfluxDBRepository _influxRepo;
+    private readonly IAlarmForwarder _alarmForwarder;
+
+    public PaEfficiencyEvaluatedHandler(
+        ILogger<PaEfficiencyEvaluatedHandler> logger,
+        IPaEfficiencyRecordRepository efficiencyRepo,
+        IInfluxDBRepository influxRepo,
+        IAlarmForwarder alarmForwarder)
+    {
+        _logger = logger;
+        _efficiencyRepo = efficiencyRepo;
+        _influxRepo = influxRepo;
+        _alarmForwarder = alarmForwarder;
+    }
+
+    public async Task Handle(PaEfficiencyEvaluatedEvent notification, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _influxRepo.WriteEfficiencyMetricAsync(
+                notification.StationId.ToString(), notification.Result, cancellationToken);
+
+            var record = new PaEfficiencyRecord
+            {
+                Id = Guid.NewGuid(),
+                StationId = notification.StationId,
+                ChannelId = notification.Result.ChannelId,
+                PaTemperature = notification.Result.PaTemperature,
+                OutputPowerDbm = notification.Result.OutputPowerDbm,
+                InputPowerDbm = notification.Result.InputPowerDbm,
+                EfficiencyPercent = notification.Result.EfficiencyPercent,
+                EfficiencyDecayRate = notification.Result.EfficiencyDecayRate,
+                PredictedRemainingHours = notification.Result.PredictedRemainingHours,
+                NeedsReplacement = notification.Result.NeedsReplacement,
+                ReplacementReason = notification.Result.ReplacementReason,
+                EfficiencyHistory = notification.Result.EfficiencyHistory,
+                MeasurementTime = notification.Timestamp,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _efficiencyRepo.AddAsync(record, cancellationToken);
+
+            if (notification.Result.NeedsReplacement)
+            {
+                await _alarmForwarder.GenerateAlarmAsync(
+                    notification.StationId,
+                    "PA_EFFICIENCY_LOW",
+                    "pa_efficiency",
+                    "medium",
+                    40.0,
+                    notification.Result.EfficiencyPercent,
+                    notification.Result.ReplacementReason ?? "功放效率低于阈值",
+                    cancellationToken);
+            }
+
+            _logger.LogInformation(
+                "PA efficiency evaluated: Station={StationId}, Channel={ChannelId}, Efficiency={Eff:F1}%, NeedsReplace={Replace}",
+                notification.StationId, notification.Result.ChannelId,
+                notification.Result.EfficiencyPercent, notification.Result.NeedsReplacement);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling PA efficiency evaluated event for station {StationId}", notification.StationId);
+        }
+    }
+}
+
+public class SpectrumScannedHandler : INotificationHandler<SpectrumScannedEvent>
+{
+    private readonly ILogger<SpectrumScannedHandler> _logger;
+    private readonly ISpectrumScanRecordRepository _spectrumRepo;
+    private readonly IInfluxDBRepository _influxRepo;
+    private readonly IAlarmForwarder _alarmForwarder;
+
+    public SpectrumScannedHandler(
+        ILogger<SpectrumScannedHandler> logger,
+        ISpectrumScanRecordRepository spectrumRepo,
+        IInfluxDBRepository influxRepo,
+        IAlarmForwarder alarmForwarder)
+    {
+        _logger = logger;
+        _spectrumRepo = spectrumRepo;
+        _influxRepo = influxRepo;
+        _alarmForwarder = alarmForwarder;
+    }
+
+    public async Task Handle(SpectrumScannedEvent notification, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _influxRepo.WriteSpectrumMetricAsync(
+                notification.StationId.ToString(), notification.Result, cancellationToken);
+
+            var interferenceCount = notification.Result.InterferenceFrequenciesMhz?.Length ?? 0;
+            var record = new SpectrumScanRecord
+            {
+                Id = Guid.NewGuid(),
+                StationId = notification.StationId,
+                FrequencyPointsMhz = notification.Result.FrequencyPointsMhz,
+                PowerLevelsDbm = notification.Result.PowerLevelsDbm,
+                InterferenceCount = interferenceCount,
+                InterferenceFrequenciesMhz = notification.Result.InterferenceFrequenciesMhz,
+                InterferenceDirectionsDeg = notification.Result.InterferenceDirectionsDeg,
+                NullAnglesDeg = notification.Result.NullAnglesDeg,
+                NullDepthsDb = notification.Result.NullDepthsDb,
+                AutoNullSteeringApplied = notification.Result.AutoNullSteeringApplied,
+                InterferenceDetails = interferenceCount > 0
+                    ? $"检测到{interferenceCount}个干扰信号, 已自动调整{notification.Result.NullAnglesDeg?.Length ?? 0}个零陷方向"
+                    : null,
+                ScanTime = notification.Timestamp,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _spectrumRepo.AddAsync(record, cancellationToken);
+
+            if (interferenceCount > 0)
+            {
+                await _alarmForwarder.GenerateAlarmAsync(
+                    notification.StationId,
+                    "SPECTRUM_INTERFERENCE_DETECTED",
+                    "spectrum",
+                    "low",
+                    0,
+                    interferenceCount,
+                    $"检测到{interferenceCount}个外部干扰信号",
+                    cancellationToken);
+            }
+
+            _logger.LogInformation(
+                "Spectrum scan processed: Station={StationId}, InterferenceCount={Count}, NullSteering={Nulling}",
+                notification.StationId, interferenceCount, notification.Result.AutoNullSteeringApplied);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling spectrum scanned event for station {StationId}", notification.StationId);
+        }
     }
 }

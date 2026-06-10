@@ -2,13 +2,17 @@
 import { ref, onMounted, onUnmounted, watch, computed, shallowRef } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import type { ChannelStatus } from '@/types'
+import type { ChannelStatus, Interference3DVector, DeformationRecord } from '@/types'
 import { getAmplitudePhaseColor, hexToRgb } from '@/utils/color'
 import BeampatternWorker from '@/workers/beampattern.worker?worker'
 
 const props = defineProps<{
   channels: ChannelStatus[]
   showBeampattern?: boolean
+  interferenceVectors?: Interference3DVector[]
+  deformationRecords?: DeformationRecord[]
+  showInterferenceVectors?: boolean
+  showDeformation?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +21,8 @@ const emit = defineEmits<{
 
 const containerRef = ref<HTMLDivElement | null>(null)
 const showBeampattern = ref(props.showBeampattern ?? false)
+const showInterferenceVectors = ref(props.showInterferenceVectors ?? false)
+const showDeformation = ref(props.showDeformation ?? false)
 const autoRotate = ref(false)
 const isCalculating = ref(false)
 const currentSLL = ref<number | null>(null)
@@ -28,11 +34,15 @@ let camera: THREE.PerspectiveCamera | null = null
 let renderer: THREE.WebGLRenderer | null = null
 let controls: OrbitControls | null = null
 let antennaGroup: THREE.Group | null = null
+let interferenceGroup: THREE.Group | null = null
+let deformationGroup: THREE.Group | null = null
 let beampatternMesh: THREE.Mesh | null = null
 let animationId: number | null = null
 let raycaster: THREE.Raycaster | null = null
 let mouse: THREE.Vector2 | null = null
 let channelMeshes: THREE.Mesh[] = []
+let interferenceVectorArrows: THREE.ArrowHelper[] = []
+let deformationIndicators: THREE.Mesh[] = []
 
 const rows = 8
 const cols = 8
@@ -109,7 +119,21 @@ const initScene = () => {
   antennaGroup = new THREE.Group()
   scene.add(antennaGroup)
 
+  interferenceGroup = new THREE.Group()
+  scene.add(interferenceGroup)
+
+  deformationGroup = new THREE.Group()
+  scene.add(deformationGroup)
+
   createAntennaArray()
+
+  if (showInterferenceVectors.value && props.interferenceVectors?.length) {
+    createInterferenceVectors()
+  }
+
+  if (showDeformation.value && props.deformationRecords?.length) {
+    createDeformationVisualization()
+  }
 
   renderer.domElement.addEventListener('click', onMouseClick)
   renderer.domElement.addEventListener('mousemove', onMouseMove)
@@ -328,6 +352,409 @@ const removeBeampattern = () => {
   }
 }
 
+const createInterferenceVectors = () => {
+  if (!interferenceGroup || !props.interferenceVectors?.length) return
+
+  removeInterferenceVectors()
+
+  props.interferenceVectors.forEach(vector => {
+    const sourcePos = new THREE.Vector3(
+      vector.sourcePosition.x,
+      vector.sourcePosition.y,
+      vector.sourcePosition.z
+    )
+    const targetPos = new THREE.Vector3(
+      vector.targetPosition.x,
+      vector.targetPosition.y,
+      vector.targetPosition.z
+    )
+    const direction = new THREE.Vector3(
+      vector.direction.x,
+      vector.direction.y,
+      vector.direction.z
+    ).normalize()
+
+    const distance = sourcePos.distanceTo(targetPos)
+    const arrowLength = Math.min(distance, 8)
+
+    const color = new THREE.Color(vector.color)
+    const arrowHelper = new THREE.ArrowHelper(
+      direction,
+      sourcePos,
+      arrowLength,
+      color.getHex(),
+      0.3,
+      0.15
+    )
+    arrowHelper.userData = { vectorData: vector }
+    interferenceGroup!.add(arrowHelper)
+    interferenceVectorArrows.push(arrowHelper)
+
+    const sourceGeometry = new THREE.SphereGeometry(0.25, 16, 16)
+    const sourceMaterial = new THREE.MeshBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.8
+    })
+    const sourceSphere = new THREE.Mesh(sourceGeometry, sourceMaterial)
+    sourceSphere.position.copy(sourcePos)
+    sourceSphere.userData = { isInterferenceSource: true, vectorData: vector }
+    interferenceGroup!.add(sourceSphere)
+
+    const intensityLabel = createTextSprite(`${vector.magnitude.toFixed(0)} dBm`, color)
+    intensityLabel.position.copy(sourcePos)
+    intensityLabel.position.y += 0.5
+    interferenceGroup!.add(intensityLabel)
+
+    const pulseGeometry = new THREE.RingGeometry(0.3, 0.4, 32)
+    const pulseMaterial = new THREE.MeshBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide
+    })
+    const pulse = new THREE.Mesh(pulseGeometry, pulseMaterial)
+    pulse.position.copy(sourcePos)
+    pulse.lookAt(new THREE.Vector3(0, 0, 0))
+    pulse.userData = { isPulse: true, baseScale: 1 }
+    interferenceGroup!.add(pulse)
+  })
+
+  const legend = createInterferenceLegend()
+  legend.position.set(-6, 4, -6)
+  interferenceGroup.add(legend)
+}
+
+const createTextSprite = (text: string, color: THREE.Color): THREE.Sprite => {
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')!
+  canvas.width = 256
+  canvas.height = 64
+
+  context.fillStyle = 'rgba(0, 0, 0, 0.7)'
+  context.roundRect(0, 0, 256, 64, 8)
+  context.fill()
+
+  context.font = 'bold 28px Arial'
+  context.fillStyle = `rgb(${color.r * 255}, ${color.g * 255}, ${color.b * 255})`
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  context.fillText(text, 128, 32)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true
+  })
+  const sprite = new THREE.Sprite(material)
+  sprite.scale.set(1.5, 0.375, 1)
+  return sprite
+}
+
+const createInterferenceLegend = (): THREE.Group => {
+  const group = new THREE.Group()
+
+  const bgGeometry = new THREE.PlaneGeometry(3, 1.5)
+  const bgMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.9
+  })
+  const bg = new THREE.Mesh(bgGeometry, bgMaterial)
+  group.add(bg)
+
+  const title = createTextSprite('干扰矢量', new THREE.Color(0x333333))
+  title.scale.set(1, 0.25, 1)
+  title.position.set(0, 0.4, 0.01)
+  group.add(title)
+
+  const operators = ['移动', '联通', '电信', '广电']
+  const colors = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6']
+
+  operators.forEach((op, idx) => {
+    const y = 0.05 - idx * 0.25
+    const dotGeometry = new THREE.CircleGeometry(0.08, 16)
+    const dotMaterial = new THREE.MeshBasicMaterial({ color: colors[idx] })
+    const dot = new THREE.Mesh(dotGeometry, dotMaterial)
+    dot.position.set(-1, y, 0.01)
+    group.add(dot)
+
+    const label = createTextSprite(op, new THREE.Color(0x333333))
+    label.scale.set(0.6, 0.2, 1)
+    label.position.set(-0.3, y, 0.01)
+    group.add(label)
+  })
+
+  return group
+}
+
+const removeInterferenceVectors = () => {
+  if (!interferenceGroup) return
+
+  while (interferenceGroup.children.length > 0) {
+    const child = interferenceGroup.children[0]
+    interferenceGroup.remove(child)
+
+    if (child instanceof THREE.ArrowHelper) {
+      child.line.geometry.dispose()
+      if (child.cone) child.cone.geometry.dispose()
+      ;(child.line.material as THREE.Material).dispose()
+      if (child.cone) (child.cone.material as THREE.Material).dispose()
+    } else if (child instanceof THREE.Mesh) {
+      child.geometry.dispose()
+      if (Array.isArray(child.material)) {
+        child.material.forEach(m => m.dispose())
+      } else {
+        child.material.dispose()
+      }
+    } else if (child instanceof THREE.Sprite) {
+      if (child.material.map) child.material.map.dispose()
+      child.material.dispose()
+    } else if (child instanceof THREE.Group) {
+      child.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          obj.geometry.dispose()
+          if (Array.isArray(obj.material)) {
+            obj.material.forEach(m => m.dispose())
+          } else {
+            obj.material.dispose()
+          }
+        } else if (obj instanceof THREE.Sprite) {
+          if (obj.material.map) obj.material.map.dispose()
+          obj.material.dispose()
+        }
+      })
+    }
+  }
+
+  interferenceVectorArrows = []
+}
+
+const toggleInterferenceVectors = () => {
+  showInterferenceVectors.value = !showInterferenceVectors.value
+  if (showInterferenceVectors.value) {
+    createInterferenceVectors()
+  } else {
+    removeInterferenceVectors()
+  }
+}
+
+const createDeformationVisualization = () => {
+  if (!deformationGroup || !antennaGroup || !props.deformationRecords?.length) return
+
+  removeDeformationVisualization()
+
+  const maxDisplacement = Math.max(...props.deformationRecords.map(r => r.estimatedDisplacement), 0.001)
+  const scaleFactor = 2 / maxDisplacement
+
+  const heatmapData: number[][] = []
+  for (let r = 0; r < rows; r++) {
+    heatmapData[r] = []
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c
+      const record = props.deformationRecords.find(
+        rec => rec.sensorId === `sensor-${idx}` || rec.sensorId.endsWith(`-${idx}`)
+      )
+      heatmapData[r][c] = record?.estimatedDisplacement || 0
+    }
+  }
+
+  const planeGeometry = new THREE.PlaneGeometry(
+    cols * elementSpacing,
+    rows * elementSpacing,
+    cols - 1,
+    rows - 1
+  )
+
+  const positions = planeGeometry.attributes.position
+  const colors = new Float32Array(positions.count * 3)
+
+  for (let i = 0; i < positions.count; i++) {
+    const x = positions.getX(i)
+    const y = positions.getY(i)
+
+    const colIdx = Math.floor((x + cols * elementSpacing / 2) / elementSpacing)
+    const rowIdx = Math.floor((y + rows * elementSpacing / 2) / elementSpacing)
+
+    let displacement = 0
+    if (rowIdx >= 0 && rowIdx < rows && colIdx >= 0 && colIdx < cols) {
+      displacement = heatmapData[rowIdx][colIdx]
+    }
+
+    positions.setZ(i, displacement * scaleFactor)
+
+    const normalizedDisp = Math.min(displacement / maxDisplacement, 1)
+    const hue = (1 - normalizedDisp) * 0.3
+    const color = new THREE.Color().setHSL(hue, 0.9, 0.5)
+    colors[i * 3] = color.r
+    colors[i * 3 + 1] = color.g
+    colors[i * 3 + 2] = color.b
+  }
+
+  planeGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  planeGeometry.computeVertexNormals()
+
+  const planeMaterial = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.8,
+    side: THREE.DoubleSide,
+    metalness: 0.1,
+    roughness: 0.8
+  })
+
+  const deformationPlane = new THREE.Mesh(planeGeometry, planeMaterial)
+  deformationPlane.rotation.x = -Math.PI / 2
+  deformationPlane.position.y = 0.6
+  deformationPlane.receiveShadow = true
+  deformationPlane.userData = { isDeformationPlane: true }
+  deformationGroup!.add(deformationPlane)
+  deformationIndicators.push(deformationPlane)
+
+  const wireframeGeometry = new THREE.WireframeGeometry(planeGeometry)
+  const wireframeMaterial = new THREE.LineBasicMaterial({
+    color: 0x333333,
+    transparent: true,
+    opacity: 0.3
+  })
+  const wireframe = new THREE.LineSegments(wireframeGeometry, wireframeMaterial)
+  wireframe.rotation.x = -Math.PI / 2
+  wireframe.position.y = 0.601
+  deformationGroup!.add(wireframe)
+
+  props.deformationRecords.filter(r => r.exceedsThreshold).forEach((record, idx) => {
+    const sensorX = (idx % cols - cols / 2 + 0.5) * elementSpacing
+    const sensorZ = (Math.floor(idx / cols) - rows / 2 + 0.5) * elementSpacing
+    const displacement = record.estimatedDisplacement * scaleFactor
+
+    const warningGeometry = new THREE.ConeGeometry(0.2, 0.6, 8)
+    const warningMaterial = new THREE.MeshBasicMaterial({
+      color: 0xef4444,
+      transparent: true,
+      opacity: 0.9
+    })
+    const warningCone = new THREE.Mesh(warningGeometry, warningMaterial)
+    warningCone.position.set(sensorX, 0.9 + displacement, sensorZ)
+    warningCone.rotation.x = Math.PI
+    warningCone.userData = { isWarning: true, record }
+    deformationGroup!.add(warningCone)
+    deformationIndicators.push(warningCone)
+
+    const label = createTextSprite(
+      `${record.estimatedDisplacement.toFixed(2)}mm`,
+      new THREE.Color(0xef4444)
+    )
+    label.position.set(sensorX, 1.3 + displacement, sensorZ)
+    deformationGroup!.add(label)
+  })
+
+  const colorBar = createDeformationColorBar(maxDisplacement)
+  colorBar.position.set(6, 2, -6)
+  deformationGroup.add(colorBar)
+}
+
+const createDeformationColorBar = (maxValue: number): THREE.Group => {
+  const group = new THREE.Group()
+
+  const barWidth = 0.3
+  const barHeight = 3
+  const segments = 50
+
+  const barGeometry = new THREE.PlaneGeometry(barWidth, barHeight, 1, segments)
+  const barColors = new Float32Array((segments + 1) * 2 * 3)
+
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments
+    const hue = (1 - t) * 0.3
+    const color = new THREE.Color().setHSL(hue, 0.9, 0.5)
+
+    for (let j = 0; j < 2; j++) {
+      const idx = (i * 2 + j) * 3
+      barColors[idx] = color.r
+      barColors[idx + 1] = color.g
+      barColors[idx + 2] = color.b
+    }
+  }
+
+  barGeometry.setAttribute('color', new THREE.BufferAttribute(barColors, 3))
+
+  const barMaterial = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide
+  })
+
+  const bar = new THREE.Mesh(barGeometry, barMaterial)
+  group.add(bar)
+
+  const labels = [0, maxValue * 0.25, maxValue * 0.5, maxValue * 0.75, maxValue]
+  labels.forEach((value, idx) => {
+    const y = -barHeight / 2 + (idx / (labels.length - 1)) * barHeight
+    const label = createTextSprite(
+      `${value.toFixed(2)}mm`,
+      new THREE.Color(0x333333)
+    )
+    label.scale.set(0.8, 0.2, 1)
+    label.position.set(barWidth + 0.5, y, 0)
+    group.add(label)
+  })
+
+  const title = createTextSprite('形变色阶', new THREE.Color(0x333333))
+  title.scale.set(0.8, 0.25, 1)
+  title.position.set(0, barHeight / 2 + 0.3, 0)
+  group.add(title)
+
+  return group
+}
+
+const removeDeformationVisualization = () => {
+  if (!deformationGroup) return
+
+  while (deformationGroup.children.length > 0) {
+    const child = deformationGroup.children[0]
+    deformationGroup.remove(child)
+
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose()
+      if (Array.isArray(child.material)) {
+        child.material.forEach(m => m.dispose())
+      } else {
+        child.material.dispose()
+      }
+    } else if (child instanceof THREE.LineSegments) {
+      child.geometry.dispose()
+      ;(child.material as THREE.Material).dispose()
+    } else if (child instanceof THREE.Sprite) {
+      if (child.material.map) child.material.map.dispose()
+      child.material.dispose()
+    } else if (child instanceof THREE.Group) {
+      child.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          obj.geometry.dispose()
+          if (Array.isArray(obj.material)) {
+            obj.material.forEach(m => m.dispose())
+          } else {
+            obj.material.dispose()
+          }
+        } else if (obj instanceof THREE.Sprite) {
+          if (obj.material.map) obj.material.map.dispose()
+          obj.material.dispose()
+        }
+      })
+    }
+  }
+
+  deformationIndicators = []
+}
+
+const toggleDeformation = () => {
+  showDeformation.value = !showDeformation.value
+  if (showDeformation.value) {
+    createDeformationVisualization()
+  } else {
+    removeDeformationVisualization()
+  }
+}
+
 const toggleBeampattern = () => {
   showBeampattern.value = !showBeampattern.value
   if (showBeampattern.value) {
@@ -423,6 +850,26 @@ const animate = () => {
     })
   }
 
+  if (interferenceGroup) {
+    interferenceGroup.children.forEach(child => {
+      if (child.userData.isPulse) {
+        const time = Date.now() * 0.003
+        const scale = child.userData.baseScale + Math.sin(time) * 0.3
+        child.scale.set(scale, scale, 1)
+        child.material.opacity = 0.5 - Math.abs(Math.sin(time)) * 0.3
+      }
+    })
+  }
+
+  if (deformationGroup) {
+    deformationGroup.children.forEach(child => {
+      if (child.userData.isWarning) {
+        const time = Date.now() * 0.005
+        child.position.y += Math.sin(time) * 0.005
+      }
+    })
+  }
+
   if (renderer && scene && camera) {
     renderer.render(scene, camera)
   }
@@ -440,6 +887,38 @@ watch(showBeampattern, (newVal) => {
     createBeampattern()
   } else {
     removeBeampattern()
+  }
+})
+
+watch(() => props.interferenceVectors, () => {
+  if (showInterferenceVectors.value && props.interferenceVectors?.length) {
+    createInterferenceVectors()
+  } else {
+    removeInterferenceVectors()
+  }
+}, { deep: true })
+
+watch(showInterferenceVectors, (newVal) => {
+  if (newVal) {
+    createInterferenceVectors()
+  } else {
+    removeInterferenceVectors()
+  }
+})
+
+watch(() => props.deformationRecords, () => {
+  if (showDeformation.value && props.deformationRecords?.length) {
+    createDeformationVisualization()
+  } else {
+    removeDeformationVisualization()
+  }
+}, { deep: true })
+
+watch(showDeformation, (newVal) => {
+  if (newVal) {
+    createDeformationVisualization()
+  } else {
+    removeDeformationVisualization()
   }
 })
 
@@ -463,15 +942,21 @@ onUnmounted(() => {
   }
 
   removeBeampattern()
+  removeInterferenceVectors()
+  removeDeformationVisualization()
 
   scene = null
   camera = null
   renderer = null
   controls = null
   antennaGroup = null
+  interferenceGroup = null
+  deformationGroup = null
   raycaster = null
   mouse = null
   channelMeshes = []
+  interferenceVectorArrows = []
+  deformationIndicators = []
 })
 
 const statusStats = computed(() => {
@@ -480,6 +965,18 @@ const statusStats = computed(() => {
     stats[ch.status]++
   })
   return stats
+})
+
+const interferenceStats = computed(() => {
+  if (!props.interferenceVectors?.length) return { count: 0, critical: 0 }
+  const critical = props.interferenceVectors.filter(v => v.magnitude > -60).length
+  return { count: props.interferenceVectors.length, critical }
+})
+
+const deformationStats = computed(() => {
+  if (!props.deformationRecords?.length) return { count: 0, exceeds: 0 }
+  const exceeds = props.deformationRecords.filter(r => r.exceedsThreshold).length
+  return { count: props.deformationRecords.length, exceeds }
 })
 </script>
 
@@ -505,6 +1002,14 @@ const statusStats = computed(() => {
             {{ currentSLL.toFixed(1) }} dB
           </span>
         </div>
+        <div v-if="interferenceStats.count > 0" class="stat-item">
+          <span class="stat-dot" :class="interferenceStats.critical > 0 ? 'fault' : 'warning'"></span>
+          <span>干扰源 {{ interferenceStats.count }}</span>
+        </div>
+        <div v-if="deformationStats.count > 0" class="stat-item">
+          <span class="stat-dot" :class="deformationStats.exceeds > 0 ? 'fault' : 'warning'"></span>
+          <span>形变超限 {{ deformationStats.exceeds }}</span>
+        </div>
       </div>
       <div class="toolbar-buttons">
         <button
@@ -524,6 +1029,33 @@ const statusStats = computed(() => {
             <path d="M12 2a10 10 0 0 1 10 10" />
           </svg>
           <span>{{ isCalculating ? '计算中...' : '方向图' }}</span>
+        </button>
+        <button
+          v-if="props.interferenceVectors?.length"
+          class="toolbar-btn"
+          :class="{ active: showInterferenceVectors }"
+          @click="toggleInterferenceVectors"
+          :title="showInterferenceVectors ? '隐藏干扰矢量' : '显示干扰矢量'"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 12h14" />
+            <path d="M12 5l7 7-7 7" />
+          </svg>
+          <span>干扰矢量</span>
+        </button>
+        <button
+          v-if="props.deformationRecords?.length"
+          class="toolbar-btn"
+          :class="{ active: showDeformation }"
+          @click="toggleDeformation"
+          :title="showDeformation ? '隐藏形变' : '显示形变'"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 17l5-5 4 4 8-8" />
+            <circle cx="7" cy="13" r="2" />
+            <circle cx="17" cy="8" r="2" />
+          </svg>
+          <span>形变</span>
         </button>
         <button
           class="toolbar-btn"

@@ -59,3 +59,48 @@ public class DiagnosisOptions
     public int IntervalMinutes { get; set; } = 5;
     public int PredictionHorizonHours { get; set; } = 24;
 }
+
+public class DeformationOptions
+{
+    public double ThresholdMm { get; set; } = 0.5;
+    public int MemSensorCount { get; set; } = 9;
+    public int StrainGaugeCount { get; set; } = 16;
+    public double YoungModulusGpa { get; set; } = 70.0;
+    public double PoissonRatio { get; set; } = 0.33;
+    public double PlateThicknessMm { get; set; } = 15.0;
+    public int IntervalMinutes { get; set; } = 5;
+    public bool AutoBeamCorrection { get; set; } = true;
+}
+
+public class CoSiteInterferenceOptions
+{
+    public double IsolationThresholdDb { get; set; } = 30.0;
+    public int IntervalMinutes { get; set; } = 10;
+    public double FrequencyOverlapThreshold { get; set; } = 0.1;
+    public double CouplingModelAccuracy { get; set; } = 0.85;
+}
+
+public class PaEfficiencyOptions
+{
+    public double ThresholdPercent { get; set; } = 40.0;
+    public double NominalGainDb { get; set; } = 28.0;
+    public double NominalEfficiencyPercent { get; set; } = 45.0;
+    public double NominalDcVoltageV { get; set; } = 28.0;
+    public int HistoryPoints { get; set; } = 24;
+    public int IntervalMinutes { get; set; } = 5;
+    public double DecayRateAlarmThreshold { get; set; } = 0.001;
+    public double MinimumRemainingHours { get; set; } = 720;
+}
+
+public class SpectrumScanOptions
+{
+    public double StartFrequencyMhz { get; set; } = 3400.0;
+    public double EndFrequencyMhz { get; set; } = 3600.0;
+    public double ResolutionBandwidthKhz { get; set; } = 100.0;
+    public double InterferencePowerThresholdDbm { get; set; } = -80.0;
+    public double NullDepthTargetDb { get; set; } = 25.0;
+    public int MaxNullCount { get; set; } = 3;
+    public int IntervalMinutes { get; set; } = 15;
+    public bool AutoNullSteering { get; set; } = true;
+    public double DoaEstimationAccuracy { get; set; } = 0.9;
+}

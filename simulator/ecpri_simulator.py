@@ -160,6 +160,57 @@ class ChannelData:
         self.tx_power = 0.0
         self.rx_power = 0.0
         self.ber = 0.0
+        self.pa_input_power = 0.0
+        self.pa_efficiency = 0.0
+
+
+class SensorData:
+    """传感器数据 - MEMS倾角、应变片、风速"""
+    def __init__(self, sensor_id: str, sensor_type: str):
+        self.sensor_id = sensor_id
+        self.sensor_type = sensor_type
+        self.tilt_x = 0.0
+        self.tilt_y = 0.0
+        self.strain = 0.0
+        self.wind_speed = 0.0
+        self.wind_direction = 0.0
+        self.temperature = 0.0
+        self.timestamp = 0.0
+
+
+class CoSiteAntennaData:
+    """共址天线数据"""
+    def __init__(self, antenna_id: str, operator: str):
+        self.antenna_id = antenna_id
+        self.operator = operator
+        self.antenna_type = ''
+        self.frequency_band = 0.0
+        self.azimuth = 0.0
+        self.elevation = 0.0
+        self.height = 0.0
+        self.horizontal_distance = 0.0
+        self.vertical_distance = 0.0
+        self.polarization = ''
+        self.transmit_power = 0.0
+        self.status = 'active'
+
+
+class SpectrumData:
+    """频谱扫描数据"""
+    def __init__(self, center_freq: float, bandwidth: float):
+        self.center_frequency = center_freq
+        self.bandwidth = bandwidth
+        self.start_frequency = center_freq - bandwidth / 2
+        self.end_frequency = center_freq + bandwidth / 2
+        self.resolution_bandwidth = 100.0
+        self.frequency_points: List[float] = []
+        self.power_levels: List[float] = []
+        self.noise_floor = -100.0
+        self.peak_detected = False
+        self.peak_frequency = 0.0
+        self.peak_power = 0.0
+        self.interference_detected = False
+        self.interference_count = 0
 
 
 class ECPRISimulator:
@@ -172,11 +223,15 @@ class ECPRISimulator:
         self.stop_event = threading.Event()
         self.mqtt_client = None
         self.anomaly_injection_thread = None
+        self.feature_data_thread = None
+        self.wind_speed_base = 5.0
+        self.temperature_base = 25.0
         
         self._init_stations()
         self._init_protocol()
         self._start_metrics_server()
         self._start_anomaly_injection()
+        self._start_feature_data_simulation()
     
     def _init_stations(self):
         """初始化基站配置，分布在北京核心城区"""
@@ -508,6 +563,387 @@ class ECPRISimulator:
         except Exception as e:
             print(f"MQTT发送失败 (基站 {station.station_code}): {e}")
             return False
+
+    def _start_feature_data_simulation(self):
+        """启动新功能数据模拟线程"""
+        if not self.config.enable_feature_simulation:
+            return
+
+        def feature_loop():
+            cycle = 0
+            while not self.stop_event.is_set():
+                try:
+                    time.sleep(self.config.feature_interval)
+                    if self.stop_event.is_set():
+                        break
+
+                    cycle += 1
+                    print(f"\n=== 第 {cycle} 轮新功能数据上报 ===")
+
+                    for station in self.stations:
+                        if self.stop_event.is_set():
+                            break
+
+                        if self.config.station_index is not None:
+                            if self.stations.index(station) != self.config.station_index:
+                                continue
+
+                        self._send_sensor_data(station)
+                        time.sleep(0.01)
+                        self._send_spectrum_data(station)
+                        time.sleep(0.01)
+
+                        if cycle % 3 == 0:
+                            self._send_pa_efficiency_data(station)
+                            time.sleep(0.01)
+
+                        if cycle % 5 == 0:
+                            self._send_cosite_antenna_data(station)
+                            time.sleep(0.01)
+
+                    # 更新环境参数
+                    self._update_environment()
+
+                except Exception as e:
+                    print(f"新功能数据模拟失败: {e}")
+
+        self.feature_data_thread = threading.Thread(target=feature_loop, daemon=True)
+        self.feature_data_thread.start()
+        print(f"新功能数据模拟已启动，间隔 {self.config.feature_interval} 秒")
+
+    def _update_environment(self):
+        """更新环境参数（风速、温度等）"""
+        hour = datetime.now().hour
+        if 6 <= hour < 18:
+            self.wind_speed_base = 8.0 + random.uniform(-2, 4)
+            self.temperature_base = 28.0 + random.uniform(-3, 5)
+        else:
+            self.wind_speed_base = 3.0 + random.uniform(-1, 2)
+            self.temperature_base = 20.0 + random.uniform(-2, 3)
+
+    def _generate_sensor_data(self, station: StationConfig, sensor_id: str, sensor_type: str) -> SensorData:
+        """生成传感器数据"""
+        data = SensorData(sensor_id, sensor_type)
+        data.timestamp = time.time() * 1000
+
+        wind_effect = math.sin(time.time() / 30) * self.wind_speed_base * 0.3
+
+        if sensor_type == 'MEMS_Accelerometer':
+            data.tilt_x = random.uniform(-0.5, 0.5) + wind_effect * 0.02
+            data.tilt_y = random.uniform(-0.5, 0.5) + wind_effect * 0.015
+            data.temperature = self.temperature_base + random.uniform(-2, 2)
+        elif sensor_type == 'Strain_Gauge':
+            base_strain = 50.0 + self.wind_speed_base * 5.0
+            data.strain = base_strain + random.uniform(-20, 20) + wind_effect * 2.0
+            data.temperature = self.temperature_base + random.uniform(-1, 3)
+        elif sensor_type == 'Wind_Sensor':
+            data.wind_speed = max(0, self.wind_speed_base + random.uniform(-2, 3) + wind_effect)
+            data.wind_direction = random.uniform(0, 360)
+            data.temperature = self.temperature_base + random.uniform(-1, 1)
+
+        return data
+
+    def _generate_pa_efficiency_data(self, station: StationConfig, channel_index: int, channel_data: ChannelData) -> Dict:
+        """生成PA效率数据"""
+        is_faulty = channel_index in station.faulty_channels
+        is_anomalous = channel_index in station.anomalous_channels
+
+        if is_faulty:
+            efficiency = 30.0 + random.uniform(-5, 5)
+            input_power = 6.0 + random.uniform(0, 2)
+        elif is_anomalous:
+            efficiency = 38.0 + random.uniform(-3, 3)
+            input_power = 5.5 + random.uniform(0, 1)
+        else:
+            efficiency = 48.0 + random.uniform(-3, 5)
+            input_power = 5.0 + random.uniform(0, 1)
+
+        return {
+            "channelId": f"channel-{station.station_id}-{channel_index}",
+            "channelIndex": channel_index,
+            "temperature": channel_data.pa_temperature,
+            "outputPower": channel_data.tx_power,
+            "inputPower": round(input_power, 2),
+            "efficiencyPercent": round(max(0, min(100, efficiency)), 2),
+            "drainEfficiency": round(max(0, min(100, efficiency + random.uniform(-2, 2))), 2),
+            "powerAddedEfficiency": round(max(0, min(100, efficiency - 3 + random.uniform(-2, 2))), 2),
+            "efficiencyThreshold": 40.0,
+            "belowThreshold": efficiency < 40.0,
+            "needsReplacement": efficiency < 35.0 and is_anomalous,
+            "measurementTime": int(time.time() * 1000),
+            "decayRate": round(0.001 + random.uniform(0, 0.01), 5)
+        }
+
+    def _generate_cosite_antenna_data(self, station: StationConfig) -> List[CoSiteAntennaData]:
+        """生成共址天线数据"""
+        antennas = []
+        operators = ['中国移动', '中国联通', '中国电信', '中国广电']
+        antenna_types = ['定向天线', '全向天线', '电调天线', '智能天线']
+        polarizations = ['垂直极化', '水平极化', '±45°双极化']
+        frequency_bands = [1.8, 2.1, 2.6, 3.5, 4.9]
+
+        count = random.randint(2, 5)
+        for i in range(count):
+            antenna = CoSiteAntennaData(
+                f"cosite-{station.station_id}-{i}",
+                random.choice(operators)
+            )
+            antenna.antenna_type = random.choice(antenna_types)
+            antenna.frequency_band = random.choice(frequency_bands)
+            antenna.azimuth = random.uniform(0, 360)
+            antenna.elevation = random.uniform(0, 15)
+            antenna.height = random.uniform(20, 50)
+            antenna.horizontal_distance = random.uniform(2, 10)
+            antenna.vertical_distance = random.uniform(-5, 10)
+            antenna.polarization = random.choice(polarizations)
+            antenna.transmit_power = random.uniform(40, 50)
+            antenna.status = random.choice(['active', 'active', 'active', 'maintenance'])
+            antennas.append(antenna)
+
+        return antennas
+
+    def _generate_spectrum_data(self, station: StationConfig) -> SpectrumData:
+        """生成频谱扫描数据"""
+        center_freq = 3500.0
+        bandwidth = 100.0
+        point_count = 201
+
+        data = SpectrumData(center_freq, bandwidth)
+        start_freq = center_freq - bandwidth / 2
+
+        for i in range(point_count):
+            freq = start_freq + (i / (point_count - 1)) * bandwidth
+            data.frequency_points.append(round(freq, 2))
+
+            base_power = data.noise_floor + random.uniform(0, 5)
+            if abs(freq - center_freq) < 40:
+                base_power = -60 + math.sin((freq - center_freq) / 10) * 10 + random.uniform(0, 3)
+
+            data.power_levels.append(round(base_power, 2))
+
+        interference_count = random.randint(0, 3)
+        for _ in range(interference_count):
+            if_freq = start_freq + random.uniform(0, bandwidth)
+            if_bandwidth = random.uniform(1, 5)
+            if_power = random.uniform(-75, -55)
+
+            for j in range(point_count):
+                if abs(data.frequency_points[j] - if_freq) < if_bandwidth / 2:
+                    data.power_levels[j] = round(max(
+                        data.power_levels[j],
+                        if_power - abs(data.frequency_points[j] - if_freq) * 2
+                    ), 2)
+
+        max_power = max(data.power_levels)
+        max_idx = data.power_levels.index(max_power)
+        data.peak_detected = max_power > -65
+        data.peak_frequency = data.frequency_points[max_idx]
+        data.peak_power = max_power
+        data.interference_detected = interference_count > 0
+        data.interference_count = interference_count
+
+        return data
+
+    def _send_sensor_data(self, station: StationConfig) -> bool:
+        """发送传感器数据"""
+        try:
+            sensor_types = ['MEMS_Accelerometer', 'Strain_Gauge', 'Wind_Sensor']
+            sensor_count = random.randint(4, 8)
+            sensors_data = []
+
+            for i in range(sensor_count):
+                sensor_type = random.choice(sensor_types)
+                sensor_data = self._generate_sensor_data(
+                    station,
+                    f"sensor-{station.station_id}-{i}",
+                    sensor_type
+                )
+                sensors_data.append({
+                    "sensorId": sensor_data.sensor_id,
+                    "sensorType": sensor_data.sensor_type,
+                    "tiltX": round(sensor_data.tilt_x, 6),
+                    "tiltY": round(sensor_data.tilt_y, 6),
+                    "strain": round(sensor_data.strain, 4),
+                    "windSpeed": round(sensor_data.wind_speed, 2),
+                    "windDirection": round(sensor_data.wind_direction, 2),
+                    "temperature": round(sensor_data.temperature, 2),
+                    "timestamp": sensor_data.timestamp
+                })
+
+            packet = {
+                "version": "1.0",
+                "messageType": "sensor_data",
+                "stationId": station.station_id,
+                "stationCode": station.station_code,
+                "timestamp": int(time.time() * 1000),
+                "sensors": sensors_data
+            }
+
+            url = f"{self.config.api_base}/api/deformation/sensor-data"
+            json_data = json.dumps(packet).encode('utf-8')
+            req = urllib.request.Request(
+                url,
+                data=json_data,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    if self.config.verbose:
+                        print(f"  ✓ {station.station_code} 传感器数据上报成功 ({len(sensors_data)} 个传感器)")
+                    return True
+                else:
+                    print(f"  ✗ {station.station_code} 传感器数据上报失败: HTTP {response.status}")
+                    return False
+        except Exception as e:
+            if self.config.verbose:
+                print(f"  ✗ {station.station_code} 传感器数据上报异常: {e}")
+            return False
+
+    def _send_pa_efficiency_data(self, station: StationConfig) -> bool:
+        """发送PA效率数据"""
+        try:
+            efficiency_data = []
+
+            for i in range(station.channel_count):
+                ch_data = self._generate_channel_data(station, i)
+                pa_data = self._generate_pa_efficiency_data(station, i, ch_data)
+                efficiency_data.append(pa_data)
+
+            packet = {
+                "version": "1.0",
+                "messageType": "pa_efficiency",
+                "stationId": station.station_id,
+                "stationCode": station.station_code,
+                "timestamp": int(time.time() * 1000),
+                "efficiencyData": efficiency_data
+            }
+
+            url = f"{self.config.api_base}/api/pa-efficiency/batch"
+            json_data = json.dumps(packet).encode('utf-8')
+            req = urllib.request.Request(
+                url,
+                data=json_data,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    if self.config.verbose:
+                        below_count = sum(1 for d in efficiency_data if d['belowThreshold'])
+                        print(f"  ✓ {station.station_code} PA效率数据上报成功 ({below_count} 个低于阈值)")
+                    return True
+                else:
+                    print(f"  ✗ {station.station_code} PA效率数据上报失败: HTTP {response.status}")
+                    return False
+        except Exception as e:
+            if self.config.verbose:
+                print(f"  ✗ {station.station_code} PA效率数据上报异常: {e}")
+            return False
+
+    def _send_cosite_antenna_data(self, station: StationConfig) -> bool:
+        """发送共址天线数据"""
+        try:
+            antennas = self._generate_cosite_antenna_data(station)
+            antennas_data = [{
+                "id": a.antenna_id,
+                "operator": a.operator,
+                "antennaType": a.antenna_type,
+                "frequencyBand": a.frequency_band,
+                "azimuth": round(a.azimuth, 2),
+                "elevation": round(a.elevation, 2),
+                "height": round(a.height, 2),
+                "horizontalDistance": round(a.horizontal_distance, 2),
+                "verticalDistance": round(a.vertical_distance, 2),
+                "polarization": a.polarization,
+                "transmitPower": round(a.transmit_power, 2),
+                "status": a.status,
+                "lastUpdateTime": int(time.time() * 1000)
+            } for a in antennas]
+
+            packet = {
+                "version": "1.0",
+                "messageType": "cosite_antennas",
+                "stationId": station.station_id,
+                "stationCode": station.station_code,
+                "timestamp": int(time.time() * 1000),
+                "antennas": antennas_data
+            }
+
+            url = f"{self.config.api_base}/api/interference/station/{station.station_id}/antennas/batch"
+            json_data = json.dumps(packet).encode('utf-8')
+            req = urllib.request.Request(
+                url,
+                data=json_data,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    if self.config.verbose:
+                        print(f"  ✓ {station.station_code} 共址天线数据上报成功 ({len(antennas)} 个天线)")
+                    return True
+                else:
+                    print(f"  ✗ {station.station_code} 共址天线数据上报失败: HTTP {response.status}")
+                    return False
+        except Exception as e:
+            if self.config.verbose:
+                print(f"  ✗ {station.station_code} 共址天线数据上报异常: {e}")
+            return False
+
+    def _send_spectrum_data(self, station: StationConfig) -> bool:
+        """发送频谱扫描数据"""
+        try:
+            spectrum = self._generate_spectrum_data(station)
+
+            packet = {
+                "version": "1.0",
+                "messageType": "spectrum_scan",
+                "stationId": station.station_id,
+                "stationCode": station.station_code,
+                "timestamp": int(time.time() * 1000),
+                "centerFrequency": spectrum.center_frequency,
+                "bandwidth": spectrum.bandwidth,
+                "startFrequency": spectrum.start_frequency,
+                "endFrequency": spectrum.end_frequency,
+                "resolutionBandwidth": spectrum.resolution_bandwidth,
+                "sweepTime": round(random.uniform(50, 100), 2),
+                "frequencyPoints": spectrum.frequency_points,
+                "powerLevels": spectrum.power_levels,
+                "noiseFloor": spectrum.noise_floor,
+                "peakDetected": spectrum.peak_detected,
+                "peakFrequency": round(spectrum.peak_frequency, 2),
+                "peakPower": round(spectrum.peak_power, 2),
+                "interferenceDetected": spectrum.interference_detected,
+                "interferenceCount": spectrum.interference_count,
+                "measurementTime": int(time.time() * 1000)
+            }
+
+            url = f"{self.config.api_base}/api/spectrum/scan/ingest"
+            json_data = json.dumps(packet).encode('utf-8')
+            req = urllib.request.Request(
+                url,
+                data=json_data,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    if self.config.verbose:
+                        if_str = f", {spectrum.interference_count} 个干扰源" if spectrum.interference_detected else ""
+                        print(f"  ✓ {station.station_code} 频谱数据上报成功{if_str}")
+                    return True
+                else:
+                    print(f"  ✗ {station.station_code} 频谱数据上报失败: HTTP {response.status}")
+                    return False
+        except Exception as e:
+            if self.config.verbose:
+                print(f"  ✗ {station.station_code} 频谱数据上报异常: {e}")
+            return False
     
     def _send_data(self, station: StationConfig) -> bool:
         """根据配置的协议发送数据"""
@@ -785,6 +1221,28 @@ def main():
         default=env_bool('SIM_VERBOSE', False),
         help='详细输出模式 (默认: False, 环境变量: SIM_VERBOSE)'
     )
+
+    # 新功能模拟配置
+    parser.add_argument(
+        '--enable-feature-simulation',
+        action='store_true',
+        default=env_bool('SIM_ENABLE_FEATURES', True),
+        help='启用新功能数据模拟 (默认: True, 环境变量: SIM_ENABLE_FEATURES)'
+    )
+
+    parser.add_argument(
+        '--no-feature-simulation',
+        dest='enable_feature_simulation',
+        action='store_false',
+        help='禁用新功能数据模拟'
+    )
+
+    parser.add_argument(
+        '--feature-interval',
+        type=int,
+        default=env_int('SIM_FEATURE_INTERVAL', 60),
+        help='新功能数据上报间隔秒数 (默认: 60, 环境变量: SIM_FEATURE_INTERVAL)'
+    )
     
     args = parser.parse_args()
     
@@ -805,7 +1263,16 @@ def main():
         print(f"异常注入间隔: {args.anomaly_interval} 秒")
         print(f"幅值偏差范围: [{args.amplitude_bias_min}, {args.amplitude_bias_max}]")
         print(f"相位偏差范围: [{args.phase_bias_min}, {args.phase_bias_max}] rad")
+    print(f"新功能模拟: {args.enable_feature_simulation}")
+    if args.enable_feature_simulation:
+        print(f"新功能上报间隔: {args.feature_interval} 秒")
     print(f"指标端口: {args.metrics_port}")
+    print("=" * 60)
+    print("新功能模块:")
+    print("  ✓ 天线阵面形变监测 (MEMS倾角+应变片+风速)")
+    print("  ✓ 共址干扰分析 (多运营商天线数据)")
+    print("  ✓ 功放效率在线评估 (温度+功率)")
+    print("  ✓ 频谱扫描与干扰避让 (频谱分析+DOA估计)")
     print("=" * 60)
     
     simulator = ECPRISimulator(args)

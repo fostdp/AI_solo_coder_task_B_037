@@ -48,6 +48,30 @@ const routes = [
     name: 'ECPRI',
     component: () => import('@/views/ECPRIDataView.vue'),
     meta: { title: 'eCPRI数据' }
+  },
+  {
+    path: '/deformation',
+    name: 'Deformation',
+    component: () => import('@/components/DeformationMonitor.vue'),
+    meta: { title: '形变监测' }
+  },
+  {
+    path: '/interference',
+    name: 'Interference',
+    component: () => import('@/components/InterferenceAnalyzer.vue'),
+    meta: { title: '共址干扰分析' }
+  },
+  {
+    path: '/pa-efficiency',
+    name: 'PaEfficiency',
+    component: () => import('@/components/PaEfficiencyPanel.vue'),
+    meta: { title: '功放效率评估' }
+  },
+  {
+    path: '/spectrum',
+    name: 'Spectrum',
+    component: () => import('@/components/SpectrumScanner.vue'),
+    meta: { title: '频谱扫描' }
   }
 ]
 

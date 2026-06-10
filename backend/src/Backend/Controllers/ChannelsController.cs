@@ -175,6 +175,43 @@ public class ChannelsController : ControllerBase
         return Ok(metricsDTOs);
     }
 
+    [HttpGet("station/{stationId}/statuses")]
+    public async Task<ActionResult<IEnumerable<ChannelStatusDTO>>> GetChannelStatuses(
+        Guid stationId,
+        CancellationToken cancellationToken = default)
+    {
+        var station = await _baseStationRepository.GetByIdAsync(stationId, cancellationToken);
+        if (station == null)
+        {
+            return NotFound($"基站 {stationId} 不存在");
+        }
+
+        var channels = await _channelRepository.GetByStationIdAsync(stationId, cancellationToken);
+        var statusDTOs = new List<ChannelStatusDTO>();
+
+        foreach (var channel in channels)
+        {
+            var latestMetrics = await _influxDBRepository.GetLatestChannelMetricsAsync(
+                channel.Id.ToString(), cancellationToken);
+
+            statusDTOs.Add(new ChannelStatusDTO
+            {
+                Id = channel.Id,
+                ChannelIndex = channel.ChannelIndex,
+                RowIndex = channel.RowIndex,
+                ColumnIndex = channel.ColumnIndex,
+                Status = channel.Status,
+                AmplitudeDeviation = latestMetrics?.AmplitudeDeviation ?? 0,
+                PhaseDeviation = latestMetrics?.PhaseDeviation ?? 0,
+                Swr = latestMetrics?.Swr ?? 0,
+                Temperature = latestMetrics?.PaTemperature ?? 0,
+                FailureProbability = (double)channel.FailureProbability
+            });
+        }
+
+        return Ok(statusDTOs);
+    }
+
     [HttpPut("{id}/calibration")]
     public async Task<ActionResult<CalibrationResultDTO>> UpdateCalibration(
         Guid id,

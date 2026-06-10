@@ -265,3 +265,272 @@ export interface SystemStatus {
   activeAlarms: number
   lastUpdateTime: Date
 }
+
+export interface SensorMetric {
+  sensorId: string
+  metricType: string
+  value: number
+  unit: string
+  timestamp: Date
+}
+
+export interface DeformationRecord {
+  id: string
+  stationId: string
+  stationName: string
+  sensorId: string
+  sensorType: 'MEMS_Accelerometer' | 'Strain_Gauge' | 'Wind_Sensor'
+  measurementType: 'Tilt_X' | 'Tilt_Y' | 'Strain' | 'WindSpeed' | 'WindDirection'
+  rawValue: number
+  estimatedDisplacement: number
+  tiltAngleX: number
+  tiltAngleY: number
+  strainValue: number
+  windSpeed: number
+  windDirection: number
+  temperature: number
+  exceedsThreshold: boolean
+  autoBeamCorrection: boolean
+  correctionApplied: boolean
+  correctionAzimuth: number
+  correctionElevation: number
+  measurementTime: Date
+  severity: 'normal' | 'warning' | 'critical'
+}
+
+export interface DeformationHistory {
+  stationId: string
+  sensorId: string
+  timePoints: Date[]
+  tiltXValues: number[]
+  tiltYValues: number[]
+  strainValues: number[]
+  displacementValues: number[]
+  temperatureValues: number[]
+}
+
+export interface DeformationMapData {
+  stationId: string
+  stationName: string
+  stationCode: string
+  longitude: number
+  latitude: number
+  maxDisplacement: number
+  sensorCount: number
+  exceedsThreshold: boolean
+  lastUpdateTime: Date
+  deformationZone: {
+    centerLat: number
+    centerLng: number
+    radius: number
+    severity: string
+  }[]
+}
+
+export interface CoSiteAntenna {
+  id: string
+  stationId: string
+  operator: string
+  antennaType: string
+  frequencyBand: number
+  azimuth: number
+  elevation: number
+  height: number
+  horizontalDistance: number
+  verticalDistance: number
+  polarization: string
+  transmitPower: number
+  status: 'active' | 'inactive' | 'maintenance'
+  lastUpdateTime: Date
+}
+
+export interface CoSiteInterferenceRecord {
+  id: string
+  stationId: string
+  stationName: string
+  targetAntennaId: string
+  targetOperator: string
+  isolationDb: number
+  thresholdDb: number
+  frequencyOverlap: number
+  couplingLoss: number
+  freeSpaceLoss: number
+  exceedsThreshold: boolean
+  adjustmentSuggestion: string
+  interferenceLevel: 'low' | 'medium' | 'high' | 'critical'
+  measurementTime: Date
+  interferenceVector?: {
+    magnitude: number
+    azimuth: number
+    elevation: number
+  }
+}
+
+export interface Interference3DVector {
+  id: string
+  sourceAntennaId: string
+  targetAntennaId: string
+  sourcePosition: { x: number; y: number; z: number }
+  targetPosition: { x: number; y: number; z: number }
+  magnitude: number
+  direction: { x: number; y: number; z: number }
+  color: string
+}
+
+export interface PaEfficiencyRecord {
+  id: string
+  stationId: string
+  stationName: string
+  channelId: string
+  channelIndex: number
+  temperature: number
+  outputPower: number
+  inputPower: number
+  efficiencyPercent: number
+  drainEfficiency: number
+  powerAddedEfficiency: number
+  efficiencyThreshold: number
+  belowThreshold: boolean
+  needsReplacement: boolean
+  measurementTime: Date
+  decayRate: number
+}
+
+export interface PaEfficiencyHistory {
+  channelId: string
+  timePoints: Date[]
+  efficiencyValues: number[]
+  temperatureValues: number[]
+  powerValues: number[]
+  decayRate: number
+  predictedRemainingHours: number
+  needsReplacement: boolean
+}
+
+export interface PaChannelPanelData {
+  channelId: string
+  channelIndex: number
+  status: 'normal' | 'warning' | 'fault'
+  currentEfficiency: number
+  currentTemperature: number
+  currentOutputPower: number
+  efficiencyDecayRate: number
+  predictedRemainingHours: number
+  needsReplacement: boolean
+  trend: number
+  efficiencyThreshold: number
+  efficiencyHistory: PaEfficiencyRecord[]
+}
+
+export interface PaReplacementSummary {
+  stationId: string
+  stationCode: string
+  channelId: string
+  channelIndex: number
+  currentEfficiency: number
+  decayRate: number
+  predictedRemainingHours: number
+  needsReplacement: boolean
+  replacementReason: string
+}
+
+export interface SpectrumScanRecord {
+  id: string
+  stationId: string
+  stationName: string
+  centerFrequency: number
+  bandwidth: number
+  startFrequency: number
+  endFrequency: number
+  resolutionBandwidth: number
+  sweepTime: number
+  frequencyPoints: number[]
+  powerLevels: number[]
+  noiseFloor: number
+  peakDetected: boolean
+  peakFrequency: number
+  peakPower: number
+  interferenceDetected: boolean
+  interferenceCount: number
+  measurementTime: Date
+}
+
+export interface InterferenceSource {
+  id: string
+  frequency: number
+  bandwidth: number
+  power: number
+  azimuth: number
+  elevation: number
+  doaEstimated: boolean
+  doaConfidence: number
+  sourceType: 'narrawband' | 'wideband' | 'modulated' | 'unknown'
+  modulationType?: string
+}
+
+export interface NullSteeringConfig {
+  enabled: boolean
+  targetAzimuth: number
+  targetElevation: number
+  nullDepth: number
+  beamWidth: number
+  adaptationRate: number
+  weights: number[]
+}
+
+export interface SpectrumChartData {
+  stationId: string
+  centerFrequency: number
+  bandwidth: number
+  frequencyPoints: number[]
+  powerLevels: number[]
+  noiseFloor: number
+  interferenceSources: InterferenceSource[]
+  nullSteeringConfig: NullSteeringConfig
+  lastUpdateTime: Date
+}
+
+export interface DoAEstimationResult {
+  sourceId: string
+  frequency: number
+  azimuth: number
+  elevation: number
+  confidence: number
+  power: number
+  covarianceMatrix: number[][]
+  spectrumPeak: number[]
+}
+
+export interface DeformationAnalysisRequest {
+  stationId: string
+  sensorId?: string
+  startTime?: Date
+  endTime?: Date
+}
+
+export interface InterferenceAnalysisRequest {
+  stationId: string
+  targetAntennaId: string
+}
+
+export interface PaEfficiencyEvaluationRequest {
+  stationId: string
+  channelId: string
+  temperature: number
+  outputPower: number
+  inputPower: number
+}
+
+export interface SpectrumScanRequest {
+  stationId: string
+  centerFrequency: number
+  bandwidth: number
+  resolutionBandwidth?: number
+}
+
+export interface NullSteeringRequest {
+  stationId: string
+  targetAzimuth: number
+  targetElevation: number
+  nullDepth: number
+}

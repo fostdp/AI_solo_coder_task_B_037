@@ -139,3 +139,162 @@ SELECT
 FROM base_stations bs
 CROSS JOIN generate_series(1, 8) r
 CROSS JOIN generate_series(1, 8) c;
+
+CREATE TABLE IF NOT EXISTS deformation_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    station_id UUID NOT NULL REFERENCES base_stations(id) ON DELETE CASCADE,
+    sensor_index INT NOT NULL,
+    tilt_angle_x DECIMAL(12, 6),
+    tilt_angle_y DECIMAL(12, 6),
+    tilt_angle_z DECIMAL(12, 6),
+    strain_value DECIMAL(15, 9),
+    temperature DECIMAL(8, 2),
+    calculated_displacement_mm DECIMAL(10, 6),
+    stress_mpa DECIMAL(10, 4),
+    deformation_zone VARCHAR(50),
+    beam_correction_applied BOOLEAN DEFAULT FALSE,
+    correction_angle_azimuth DECIMAL(10, 6),
+    correction_angle_elevation DECIMAL(10, 6),
+    wind_speed DECIMAL(8, 2),
+    measurement_time TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS cosite_interference_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    station_id UUID NOT NULL REFERENCES base_stations(id) ON DELETE CASCADE,
+    interfering_operator VARCHAR(100),
+    interfering_antenna_type VARCHAR(100),
+    interfering_frequency_mhz DECIMAL(12, 3),
+    interfering_power_dbm DECIMAL(10, 4),
+    separation_distance_meters DECIMAL(10, 4),
+    azimuth_angle_deg DECIMAL(10, 6),
+    elevation_angle_deg DECIMAL(10, 6),
+    isolation_db DECIMAL(10, 4),
+    coupling_coefficient DECIMAL(15, 9),
+    interference_margin_db DECIMAL(10, 4),
+    is_isolation_sufficient BOOLEAN DEFAULT TRUE,
+    recommendation TEXT,
+    interference_vector_x DECIMAL(12, 6),
+    interference_vector_y DECIMAL(12, 6),
+    interference_vector_z DECIMAL(12, 6),
+    affected_band_start_mhz DECIMAL(12, 3),
+    affected_band_end_mhz DECIMAL(12, 3),
+    measurement_time TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pa_efficiency_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    station_id UUID NOT NULL REFERENCES base_stations(id) ON DELETE CASCADE,
+    channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    channel_index INT NOT NULL,
+    pa_temperature DECIMAL(8, 2),
+    output_power_dbm DECIMAL(10, 4),
+    input_power_dbm DECIMAL(10, 4),
+    gain_db DECIMAL(8, 4),
+    efficiency_percent DECIMAL(8, 4),
+    power_added_efficiency_percent DECIMAL(8, 4),
+    dc_current_a DECIMAL(10, 6),
+    dc_voltage_v DECIMAL(8, 4),
+    dc_power_w DECIMAL(10, 4),
+    rf_power_w DECIMAL(10, 4),
+    efficiency_decay_rate DECIMAL(12, 8),
+    predicted_remaining_hours DECIMAL(12, 2),
+    needs_replacement BOOLEAN DEFAULT FALSE,
+    replacement_reason TEXT,
+    efficiency_history DECIMAL(8, 4)[],
+    history_timestamps TIMESTAMP[],
+    measurement_time TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS spectrum_scan_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    station_id UUID NOT NULL REFERENCES base_stations(id) ON DELETE CASCADE,
+    start_frequency_mhz DECIMAL(12, 3),
+    end_frequency_mhz DECIMAL(12, 3),
+    resolution_bandwidth_khz DECIMAL(12, 3),
+    frequency_points_mhz DECIMAL(12, 3)[],
+    power_levels_dbm DECIMAL(10, 4)[],
+    interference_count INT DEFAULT 0,
+    interference_details TEXT,
+    interference_frequencies_mhz DECIMAL(12, 3)[],
+    interference_powers_dbm DECIMAL(10, 4)[],
+    interference_directions_deg DECIMAL(10, 6)[],
+    null_steering_applied BOOLEAN DEFAULT FALSE,
+    null_angles_deg DECIMAL(10, 6)[],
+    null_depths_db DECIMAL(8, 4)[],
+    noise_floor_dbm DECIMAL(10, 4),
+    spurious_free_dynamic_range_db DECIMAL(8, 4),
+    scan_time TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS co_site_antennas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    station_id UUID NOT NULL REFERENCES base_stations(id) ON DELETE CASCADE,
+    operator_name VARCHAR(100) NOT NULL,
+    antenna_type VARCHAR(100),
+    frequency_band_start_mhz DECIMAL(12, 3),
+    frequency_band_end_mhz DECIMAL(12, 3),
+    transmit_power_dbm DECIMAL(10, 4),
+    separation_distance_meters DECIMAL(10, 4),
+    azimuth_angle_deg DECIMAL(10, 6),
+    elevation_angle_deg DECIMAL(10, 6),
+    height_offset_meters DECIMAL(8, 2),
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_deformation_station ON deformation_records(station_id, measurement_time DESC);
+CREATE INDEX IF NOT EXISTS idx_deformation_zone ON deformation_records(deformation_zone);
+CREATE INDEX IF NOT EXISTS idx_cosite_station ON cosite_interference_records(station_id, measurement_time DESC);
+CREATE INDEX IF NOT EXISTS idx_cosite_isolation ON cosite_interference_records(is_isolation_sufficient);
+CREATE INDEX IF NOT EXISTS idx_pa_efficiency_channel ON pa_efficiency_records(channel_id, measurement_time DESC);
+CREATE INDEX IF NOT EXISTS idx_pa_efficiency_replace ON pa_efficiency_records(needs_replacement);
+CREATE INDEX IF NOT EXISTS idx_spectrum_station ON spectrum_scan_records(station_id, scan_time DESC);
+CREATE INDEX IF NOT EXISTS idx_spectrum_interference ON spectrum_scan_records(interference_count);
+CREATE INDEX IF NOT EXISTS idx_co_site_antennas_station ON co_site_antennas(station_id);
+
+INSERT INTO system_config (config_key, config_value, description) VALUES
+('deformation_threshold_mm', '0.5', '天线阵面形变阈值(mm)'),
+('deformation_interval_minutes', '5', '形变监测间隔(分钟)'),
+('mem_sensor_count', '9', 'MEMS倾角传感器数量'),
+('strain_gauge_count', '16', '应变片数量'),
+('young_modulus_gpa', '70.0', '阵面材料杨氏模量(GPa)'),
+('poisson_ratio', '0.33', '阵面材料泊松比'),
+('plate_thickness_mm', '15.0', '阵面厚度(mm)'),
+('isolation_threshold_db', '30.0', '共址隔离度阈值(dB)'),
+('cosite_interference_interval_minutes', '10', '共址干扰分析间隔(分钟)'),
+('pa_efficiency_threshold_percent', '40.0', '功放效率阈值(%)'),
+('pa_efficiency_interval_minutes', '5', '功放效率评估间隔(分钟)'),
+('pa_nominal_gain_db', '28.0', '功放标称增益(dB)'),
+('pa_nominal_efficiency_percent', '45.0', '功放标称效率(%)'),
+('spectrum_scan_interval_minutes', '15', '频谱扫描间隔(分钟)'),
+('spectrum_start_mhz', '3400.0', '频谱扫描起始频率(MHz)'),
+('spectrum_end_mhz', '3600.0', '频谱扫描终止频率(MHz)'),
+('spectrum_rbw_khz', '100.0', '频谱扫描分辨率带宽(kHz)'),
+('interference_power_threshold_dbm', '-80.0', '干扰功率阈值(dBm)'),
+('null_depth_target_db', '25.0', '零陷目标深度(dB)'),
+('max_null_count', '3', '最大零陷数量');
+
+INSERT INTO co_site_antennas (station_id, operator_name, antenna_type, frequency_band_start_mhz, frequency_band_end_mhz, transmit_power_dbm, separation_distance_meters, azimuth_angle_deg, elevation_angle_deg, height_offset_meters, status)
+SELECT bs.id, 
+       CASE (random() * 3)::INT 
+           WHEN 0 THEN '中国移动' 
+           WHEN 1 THEN '中国联通' 
+           ELSE '中国电信' 
+       END,
+       'Macro-Antenna-' || (random() * 3 + 1)::INT,
+       1800 + (random() * 200),
+       1900 + (random() * 200),
+       43 + (random() * 5),
+       2.0 + (random() * 3.0),
+       random() * 360,
+       random() * 20 - 5,
+       random() * 2 - 1,
+       'active'
+FROM base_stations bs
+CROSS JOIN generate_series(1, 2);

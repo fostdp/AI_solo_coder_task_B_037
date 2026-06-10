@@ -12,6 +12,20 @@ import type {
   CalibrationResult,
   ECPRIDataPacket,
   ECPRIStats,
+  DeformationRecord,
+  DeformationHistory,
+  DeformationMapData,
+  CoSiteAntenna,
+  CoSiteInterferenceRecord,
+  Interference3DVector,
+  PaEfficiencyRecord,
+  PaEfficiencyHistory,
+  PaReplacementSummary,
+  SpectrumScanRecord,
+  SpectrumChartData,
+  InterferenceSource,
+  DoAEstimationResult,
+  NullSteeringConfig,
 } from '@/types'
 
 export function generateBaseStations(count: number = 200): BaseStation[] {
@@ -538,5 +552,460 @@ export function generateECPRIStats(): ECPRIStats {
     successRate: ((total - failed) / total) * 100,
     lastPacketTime: new Date(),
     serviceStatus: 'running',
+  }
+}
+
+export function generateDeformationRecords(count: number = 20): DeformationRecord[] {
+  const records: DeformationRecord[] = []
+  const sensorTypes: Array<'MEMS_Accelerometer' | 'Strain_Gauge' | 'Wind_Sensor'> = [
+    'MEMS_Accelerometer', 'Strain_Gauge', 'Wind_Sensor'
+  ]
+  const measurementTypes: Array<'Tilt_X' | 'Tilt_Y' | 'Strain' | 'WindSpeed' | 'WindDirection'> = [
+    'Tilt_X', 'Tilt_Y', 'Strain', 'WindSpeed', 'WindDirection'
+  ]
+
+  for (let i = 0; i < count; i++) {
+    const exceedsThreshold = Math.random() > 0.7
+    const displacement = exceedsThreshold
+      ? 0.5 + Math.random() * 1.5
+      : Math.random() * 0.4
+    const severity = exceedsThreshold
+      ? (Math.random() > 0.5 ? 'critical' : 'warning')
+      : 'normal'
+
+    records.push({
+      id: `deform-${i}`,
+      stationId: `station-${Math.floor(Math.random() * 10)}`,
+      stationName: `北京基站-${String(Math.floor(Math.random() * 10) + 1).padStart(3, '0')}`,
+      sensorId: `sensor-${Math.floor(Math.random() * 8)}`,
+      sensorType: sensorTypes[Math.floor(Math.random() * sensorTypes.length)],
+      measurementType: measurementTypes[Math.floor(Math.random() * measurementTypes.length)],
+      rawValue: Math.random() * 10,
+      estimatedDisplacement: displacement,
+      tiltAngleX: (Math.random() - 0.5) * 2,
+      tiltAngleY: (Math.random() - 0.5) * 2,
+      strainValue: Math.random() * 500,
+      windSpeed: Math.random() * 25,
+      windDirection: Math.random() * 360,
+      temperature: 25 + Math.random() * 20,
+      exceedsThreshold,
+      autoBeamCorrection: true,
+      correctionApplied: exceedsThreshold && Math.random() > 0.3,
+      correctionAzimuth: exceedsThreshold ? (Math.random() - 0.5) * 5 : 0,
+      correctionElevation: exceedsThreshold ? (Math.random() - 0.5) * 2 : 0,
+      measurementTime: new Date(Date.now() - i * 30 * 60 * 1000),
+      severity
+    })
+  }
+
+  return records.sort((a, b) => b.measurementTime.getTime() - a.measurementTime.getTime())
+}
+
+export function generateDeformationHistory(hours: number = 24): DeformationHistory {
+  const timePoints: Date[] = []
+  const tiltXValues: number[] = []
+  const tiltYValues: number[] = []
+  const strainValues: number[] = []
+  const displacementValues: number[] = []
+  const temperatureValues: number[] = []
+
+  const now = new Date()
+  for (let i = hours; i >= 0; i--) {
+    const timestamp = new Date(now.getTime() - i * 60 * 60 * 1000)
+    timePoints.push(timestamp)
+    tiltXValues.push((Math.random() - 0.5) * 1.5 + Math.sin(i / 6) * 0.3)
+    tiltYValues.push((Math.random() - 0.5) * 1.5 + Math.cos(i / 6) * 0.3)
+    strainValues.push(100 + Math.random() * 200 + Math.sin(i / 4) * 50)
+    displacementValues.push(0.2 + Math.random() * 0.3 + (i > hours - 3 ? 0.3 : 0))
+    temperatureValues.push(25 + Math.random() * 10 + Math.sin(i / 8) * 5)
+  }
+
+  return {
+    stationId: 'station-0',
+    sensorId: 'sensor-0',
+    timePoints,
+    tiltXValues,
+    tiltYValues,
+    strainValues,
+    displacementValues,
+    temperatureValues
+  }
+}
+
+export function generateDeformationMapData(): DeformationMapData[] {
+  const stations = generateBaseStations(10)
+  return stations.map((station, index) => {
+    const exceedsThreshold = Math.random() > 0.7
+    const maxDisplacement = exceedsThreshold
+      ? 0.5 + Math.random() * 1.0
+      : Math.random() * 0.4
+
+    return {
+      stationId: station.id,
+      stationName: station.stationName,
+      stationCode: station.stationCode,
+      longitude: station.longitude,
+      latitude: station.latitude,
+      maxDisplacement,
+      sensorCount: 4 + Math.floor(Math.random() * 5),
+      exceedsThreshold,
+      lastUpdateTime: new Date(),
+      deformationZone: exceedsThreshold ? [{
+        centerLat: station.latitude + (Math.random() - 0.5) * 0.01,
+        centerLng: station.longitude + (Math.random() - 0.5) * 0.01,
+        radius: 50 + Math.random() * 100,
+        severity: Math.random() > 0.5 ? 'critical' : 'warning'
+      }] : []
+    }
+  })
+}
+
+export function generateCoSiteAntennas(stationId: string, count: number = 5): CoSiteAntenna[] {
+  const antennas: CoSiteAntenna[] = []
+  const operators = ['中国移动', '中国联通', '中国电信', '中国广电']
+  const antennaTypes = ['定向天线', '全向天线', '电调天线', '智能天线']
+  const polarizations = ['垂直极化', '水平极化', '±45°双极化']
+  const statuses: Array<'active' | 'inactive' | 'maintenance'> = ['active', 'active', 'inactive', 'maintenance']
+
+  for (let i = 0; i < count; i++) {
+    antennas.push({
+      id: `cosite-antenna-${stationId}-${i}`,
+      stationId,
+      operator: operators[Math.floor(Math.random() * operators.length)],
+      antennaType: antennaTypes[Math.floor(Math.random() * antennaTypes.length)],
+      frequencyBand: [1.8, 2.1, 2.6, 3.5, 4.9][Math.floor(Math.random() * 5)],
+      azimuth: Math.random() * 360,
+      elevation: 0 + Math.random() * 15,
+      height: 20 + Math.random() * 30,
+      horizontalDistance: 2 + Math.random() * 8,
+      verticalDistance: -5 + Math.random() * 10,
+      polarization: polarizations[Math.floor(Math.random() * polarizations.length)],
+      transmitPower: 40 + Math.random() * 10,
+      status: statuses[Math.floor(Math.random() * statuses.length)],
+      lastUpdateTime: new Date()
+    })
+  }
+
+  return antennas
+}
+
+export function generateCoSiteInterferenceRecords(stationId: string, count: number = 10): CoSiteInterferenceRecord[] {
+  const records: CoSiteInterferenceRecord[] = []
+  const operators = ['中国移动', '中国联通', '中国电信', '中国广电']
+  const levels: Array<'low' | 'medium' | 'high' | 'critical'> = ['low', 'medium', 'high', 'critical']
+  const suggestions = [
+    '建议调整天线方位角，增加物理隔离',
+    '建议降低发射功率或更换频率',
+    '建议增加屏蔽措施',
+    '天线方向冲突严重，建议重新规划'
+  ]
+
+  for (let i = 0; i < count; i++) {
+    const exceedsThreshold = Math.random() > 0.6
+    const isolationDb = exceedsThreshold
+      ? 20 + Math.random() * 10
+      : 35 + Math.random() * 20
+    const interferenceLevel = exceedsThreshold
+      ? levels[2 + Math.floor(Math.random() * 2)]
+      : levels[Math.floor(Math.random() * 2)]
+
+    records.push({
+      id: `interference-${i}`,
+      stationId,
+      stationName: `基站-${stationId.split('-')[1]}`,
+      targetAntennaId: `cosite-antenna-${stationId}-${Math.floor(Math.random() * 5)}`,
+      targetOperator: operators[Math.floor(Math.random() * operators.length)],
+      isolationDb,
+      thresholdDb: 30,
+      frequencyOverlap: Math.random() * 0.8,
+      couplingLoss: 15 + Math.random() * 20,
+      freeSpaceLoss: 40 + Math.random() * 30,
+      exceedsThreshold,
+      adjustmentSuggestion: exceedsThreshold ? suggestions[Math.floor(Math.random() * suggestions.length)] : '隔离度良好，无需调整',
+      interferenceLevel,
+      measurementTime: new Date(Date.now() - i * 60 * 60 * 1000),
+      interferenceVector: {
+        magnitude: exceedsThreshold ? -60 + Math.random() * 20 : -90 + Math.random() * 20,
+        azimuth: Math.random() * 360,
+        elevation: -10 + Math.random() * 30
+      }
+    })
+  }
+
+  return records.sort((a, b) => b.measurementTime.getTime() - a.measurementTime.getTime())
+}
+
+export function generateInterference3DVectors(stationId: string): Interference3DVector[] {
+  const vectors: Interference3DVector[] = []
+  const colors = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6']
+
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * Math.PI * 2
+    const distance = 5 + Math.random() * 3
+    vectors.push({
+      id: `vector-${i}`,
+      sourceAntennaId: `cosite-antenna-${stationId}-${i}`,
+      targetAntennaId: `main-antenna-${stationId}`,
+      sourcePosition: {
+        x: Math.cos(angle) * distance,
+        y: Math.sin(angle) * distance,
+        z: 2 + Math.random() * 2
+      },
+      targetPosition: { x: 0, y: 0, z: 0 },
+      magnitude: -80 + Math.random() * 40,
+      direction: {
+        x: -Math.cos(angle),
+        y: -Math.sin(angle),
+        z: -0.2 + Math.random() * 0.4
+      },
+      color: colors[i % colors.length]
+    })
+  }
+
+  return vectors
+}
+
+export function generatePaEfficiencyRecords(count: number = 64): PaEfficiencyRecord[] {
+  const records: PaEfficiencyRecord[] = []
+
+  for (let i = 0; i < count; i++) {
+    const belowThreshold = Math.random() > 0.75
+    const efficiencyPercent = belowThreshold
+      ? 30 + Math.random() * 10
+      : 42 + Math.random() * 25
+    const temperature = belowThreshold
+      ? 65 + Math.random() * 20
+      : 45 + Math.random() * 15
+
+    records.push({
+      id: `pa-eff-${i}`,
+      stationId: `station-${Math.floor(Math.random() * 10)}`,
+      stationName: `基站-${Math.floor(Math.random() * 10)}`,
+      channelId: `channel-station-0-${i}`,
+      channelIndex: i,
+      temperature,
+      outputPower: 40 + Math.random() * 5,
+      inputPower: 5 + Math.random() * 2,
+      efficiencyPercent,
+      drainEfficiency: efficiencyPercent - 2 + Math.random() * 4,
+      powerAddedEfficiency: efficiencyPercent - 5 + Math.random() * 3,
+      efficiencyThreshold: 40,
+      belowThreshold,
+      needsReplacement: belowThreshold && Math.random() > 0.5,
+      measurementTime: new Date(Date.now() - Math.random() * 60 * 60 * 1000),
+      decayRate: 0.001 + Math.random() * 0.01
+    })
+  }
+
+  return records
+}
+
+export function generatePaEfficiencyHistory(hours: number = 24): PaEfficiencyHistory {
+  const timePoints: Date[] = []
+  const efficiencyValues: number[] = []
+  const temperatureValues: number[] = []
+  const powerValues: number[] = []
+
+  const now = new Date()
+  let baseEfficiency = 45
+
+  for (let i = hours; i >= 0; i--) {
+    const timestamp = new Date(now.getTime() - i * 60 * 60 * 1000)
+    timePoints.push(timestamp)
+    baseEfficiency -= 0.02 + Math.random() * 0.01
+    efficiencyValues.push(baseEfficiency + Math.sin(i / 4) * 2 + (Math.random() - 0.5) * 1)
+    temperatureValues.push(50 + Math.sin(i / 6) * 8 + (Math.random() - 0.5) * 3)
+    powerValues.push(42 + Math.sin(i / 8) * 2 + (Math.random() - 0.5) * 1)
+  }
+
+  const decayRate = (45 - baseEfficiency) / hours
+  const predictedRemainingHours = Math.max(0, (baseEfficiency - 40) / decayRate)
+
+  return {
+    channelId: 'channel-station-0-0',
+    timePoints,
+    efficiencyValues,
+    temperatureValues,
+    powerValues,
+    decayRate,
+    predictedRemainingHours,
+    needsReplacement: baseEfficiency < 40
+  }
+}
+
+export function generatePaReplacementSummaries(count: number = 5): PaReplacementSummary[] {
+  const summaries: PaReplacementSummary[] = []
+  const reasons = [
+    '效率持续低于阈值，衰减速率加快',
+    '温度过高导致效率下降明显',
+    '长期运行老化，效率衰减严重',
+    '输出功率不稳定，效率波动大'
+  ]
+
+  for (let i = 0; i < count; i++) {
+    const channelIndex = Math.floor(Math.random() * 64)
+    summaries.push({
+      stationId: `station-${Math.floor(Math.random() * 10)}`,
+      stationCode: `BJ-${String(i + 1).padStart(5, '0')}`,
+      channelId: `channel-station-${Math.floor(Math.random() * 10)}-${channelIndex}`,
+      channelIndex,
+      currentEfficiency: 32 + Math.random() * 8,
+      decayRate: 0.005 + Math.random() * 0.01,
+      predictedRemainingHours: 100 + Math.random() * 1000,
+      needsReplacement: true,
+      replacementReason: reasons[Math.floor(Math.random() * reasons.length)]
+    })
+  }
+
+  return summaries
+}
+
+export function generateSpectrumChartData(stationId: string): SpectrumChartData {
+  const centerFrequency = 3500
+  const bandwidth = 100
+  const pointCount = 201
+  const frequencyPoints: number[] = []
+  const powerLevels: number[] = []
+  const interferenceSources: InterferenceSource[] = []
+
+  const startFreq = centerFrequency - bandwidth / 2
+  const noiseFloor = -100
+
+  for (let i = 0; i < pointCount; i++) {
+    const freq = startFreq + (i / (pointCount - 1)) * bandwidth
+    frequencyPoints.push(freq)
+
+    let power = noiseFloor + Math.random() * 5
+    if (Math.abs(freq - centerFrequency) < 40) {
+      power = -60 + Math.sin((freq - centerFrequency) / 10) * 10 + Math.random() * 3
+    }
+    powerLevels.push(power)
+  }
+
+  const interferenceCount = 2 + Math.floor(Math.random() * 3)
+  for (let i = 0; i < interferenceCount; i++) {
+    const ifFreq = startFreq + Math.random() * bandwidth
+    const ifBandwidth = 1 + Math.random() * 5
+    const ifPower = -70 + Math.random() * 20
+
+    interferenceSources.push({
+      id: `if-source-${i}`,
+      frequency: ifFreq,
+      bandwidth: ifBandwidth,
+      power: ifPower,
+      azimuth: Math.random() * 360,
+      elevation: -10 + Math.random() * 40,
+      doaEstimated: Math.random() > 0.3,
+      doaConfidence: 0.6 + Math.random() * 0.35,
+      sourceType: ['narrawband', 'wideband', 'modulated', 'unknown'][Math.floor(Math.random() * 4)] as any,
+      modulationType: Math.random() > 0.5 ? 'QPSK' : 'QAM'
+    })
+
+    for (let j = 0; j < pointCount; j++) {
+      if (Math.abs(frequencyPoints[j] - ifFreq) < ifBandwidth / 2) {
+        powerLevels[j] = Math.max(powerLevels[j], ifPower - Math.abs(frequencyPoints[j] - ifFreq) * 2)
+      }
+    }
+  }
+
+  return {
+    stationId,
+    centerFrequency,
+    bandwidth,
+    frequencyPoints,
+    powerLevels,
+    noiseFloor,
+    interferenceSources,
+    nullSteeringConfig: {
+      enabled: Math.random() > 0.5,
+      targetAzimuth: interferenceSources[0]?.azimuth || 0,
+      targetElevation: interferenceSources[0]?.elevation || 0,
+      nullDepth: 20 + Math.random() * 15,
+      beamWidth: 5 + Math.random() * 5,
+      adaptationRate: 0.1 + Math.random() * 0.5,
+      weights: Array.from({ length: 64 }, () => Math.random() * 2 - 1)
+    },
+    lastUpdateTime: new Date()
+  }
+}
+
+export function generateSpectrumScanRecords(stationId: string, count: number = 10): SpectrumScanRecord[] {
+  const records: SpectrumScanRecord[] = []
+
+  for (let i = 0; i < count; i++) {
+    const pointCount = 201
+    const centerFrequency = 3500
+    const bandwidth = 100
+    const startFreq = centerFrequency - bandwidth / 2
+    const frequencyPoints: number[] = []
+    const powerLevels: number[] = []
+    const noiseFloor = -100
+
+    for (let j = 0; j < pointCount; j++) {
+      const freq = startFreq + (j / (pointCount - 1)) * bandwidth
+      frequencyPoints.push(freq)
+      let power = noiseFloor + Math.random() * 5
+      if (Math.abs(freq - centerFrequency) < 40) {
+        power = -60 + Math.sin((freq - centerFrequency) / 10) * 10
+      }
+      powerLevels.push(power)
+    }
+
+    const interferenceDetected = Math.random() > 0.4
+    const peakIdx = Math.floor(Math.random() * pointCount)
+
+    records.push({
+      id: `spectrum-${i}`,
+      stationId,
+      stationName: `基站-${stationId.split('-')[1]}`,
+      centerFrequency,
+      bandwidth,
+      startFrequency: startFreq,
+      endFrequency: centerFrequency + bandwidth / 2,
+      resolutionBandwidth: 100,
+      sweepTime: 50 + Math.random() * 50,
+      frequencyPoints,
+      powerLevels,
+      noiseFloor,
+      peakDetected: interferenceDetected,
+      peakFrequency: frequencyPoints[peakIdx],
+      peakPower: Math.max(...powerLevels),
+      interferenceDetected,
+      interferenceCount: interferenceDetected ? 1 + Math.floor(Math.random() * 3) : 0,
+      measurementTime: new Date(Date.now() - i * 15 * 60 * 1000)
+    })
+  }
+
+  return records.sort((a, b) => b.measurementTime.getTime() - a.measurementTime.getTime())
+}
+
+export function generateDoAEstimationResult(stationId: string, sourceId: string): DoAEstimationResult {
+  const azimuth = Math.random() * 360
+  const elevation = -10 + Math.random() * 40
+
+  const spectrumPeak: number[] = []
+  for (let i = 0; i < 360; i++) {
+    const angle = i - 180
+    const dist = Math.abs(angle - azimuth)
+    spectrumPeak.push(-60 - Math.min(dist, 360 - dist) * 0.5 + Math.random() * 3)
+  }
+
+  const covarianceMatrix: number[][] = []
+  for (let i = 0; i < 8; i++) {
+    covarianceMatrix[i] = []
+    for (let j = 0; j < 8; j++) {
+      covarianceMatrix[i][j] = Math.exp(-Math.abs(i - j) * 0.3) * (Math.random() * 0.2 + 0.8)
+    }
+  }
+
+  return {
+    sourceId,
+    frequency: 3500 + Math.random() * 50,
+    azimuth,
+    elevation,
+    confidence: 0.7 + Math.random() * 0.25,
+    power: -70 + Math.random() * 20,
+    covarianceMatrix,
+    spectrumPeak
   }
 }

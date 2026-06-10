@@ -4,7 +4,12 @@ using AntennaMonitoring.Modules.EcpriIngestor;
 using AntennaMonitoring.Modules.CalibrationEngine;
 using AntennaMonitoring.Modules.HealthDiagnoser;
 using AntennaMonitoring.Modules.AlarmForwarder;
+using AntennaMonitoring.Modules.DeformationMonitor;
+using AntennaMonitoring.Modules.CoSiteInterferenceAnalyzer;
+using AntennaMonitoring.Modules.PaEfficiencyEvaluator;
+using AntennaMonitoring.Modules.SpectrumScanner;
 using AntennaMonitoring.Models;
+using AntennaMonitoring.Repositories;
 using Microsoft.Extensions.Configuration;
 using MQTTnet;
 using MQTTnet.Client;
@@ -25,13 +30,27 @@ public static class ModuleServiceCollectionExtensions
 
         services.Configure<AlgorithmParameterOptions>(
             configuration.GetSection("AlgorithmParameters"));
+        services.Configure<DeformationOptions>(
+            configuration.GetSection("Deformation"));
+        services.Configure<CoSiteInterferenceOptions>(
+            configuration.GetSection("CoSiteInterference"));
+        services.Configure<PaEfficiencyOptions>(
+            configuration.GetSection("PaEfficiency"));
+        services.Configure<SpectrumScanOptions>(
+            configuration.GetSection("SpectrumScan"));
 
         services.AddSingleton<IDataChannels, DataChannels>();
+
+        services.AddFeatureRepositories();
 
         services.AddEcpriIngestorModule();
         services.AddCalibrationEngineModule();
         services.AddHealthDiagnoserModule();
         services.AddAlarmForwarderModule(configuration);
+        services.AddDeformationMonitorModule(configuration);
+        services.AddCoSiteInterferenceAnalyzerModule(configuration);
+        services.AddPaEfficiencyEvaluatorModule(configuration);
+        services.AddSpectrumScannerModule(configuration);
 
         return services;
     }
@@ -92,6 +111,52 @@ public static class ModuleServiceCollectionExtensions
         services.AddScoped<IAlarmForwarder, AlarmForwarder>();
         services.AddHostedService<AlarmForwarderHostedService>();
 
+        return services;
+    }
+
+    private static IServiceCollection AddFeatureRepositories(this IServiceCollection services)
+    {
+        services.AddScoped<IDeformationRecordRepository, DeformationRecordRepository>();
+        services.AddScoped<ICoSiteInterferenceRecordRepository, CoSiteInterferenceRecordRepository>();
+        services.AddScoped<ICoSiteAntennaRepository, CoSiteAntennaRepository>();
+        services.AddScoped<IPaEfficiencyRecordRepository, PaEfficiencyRecordRepository>();
+        services.AddScoped<ISpectrumScanRecordRepository, SpectrumScanRecordRepository>();
+        return services;
+    }
+
+    private static IServiceCollection AddDeformationMonitorModule(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddScoped<IDeformationMonitor, DeformationMonitor>();
+        services.AddHostedService<DeformationMonitorHostedService>();
+        return services;
+    }
+
+    private static IServiceCollection AddCoSiteInterferenceAnalyzerModule(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddScoped<ICoSiteInterferenceAnalyzer, CoSiteInterferenceAnalyzer>();
+        services.AddHostedService<CoSiteInterferenceAnalyzerHostedService>();
+        return services;
+    }
+
+    private static IServiceCollection AddPaEfficiencyEvaluatorModule(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddScoped<IPaEfficiencyEvaluator, PaEfficiencyEvaluator>();
+        services.AddHostedService<PaEfficiencyEvaluatorHostedService>();
+        return services;
+    }
+
+    private static IServiceCollection AddSpectrumScannerModule(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddScoped<ISpectrumScanner, SpectrumScanner>();
+        services.AddHostedService<SpectrumScannerHostedService>();
         return services;
     }
 }

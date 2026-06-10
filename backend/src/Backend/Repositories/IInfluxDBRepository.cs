@@ -35,4 +35,20 @@ public interface IInfluxDBRepository
         CancellationToken cancellationToken = default);
 
     Task<bool> CheckHealthAsync(CancellationToken cancellationToken = default);
+
+    Task WriteSensorMetricAsync(string stationId, SensorData sensorData,
+        CancellationToken cancellationToken = default);
+
+    Task<IEnumerable<SensorMetric>> GetSensorMetricsAsync(
+        string stationId, DateTime startTime, DateTime endTime,
+        CancellationToken cancellationToken = default);
+
+    Task WriteInterferenceMetricAsync(string stationId, CoSiteInterferenceResult result,
+        CancellationToken cancellationToken = default);
+
+    Task WriteEfficiencyMetricAsync(string stationId, PaEfficiencyResult result,
+        CancellationToken cancellationToken = default);
+
+    Task WriteSpectrumMetricAsync(string stationId, SpectrumScanResult result,
+        CancellationToken cancellationToken = default);
 }

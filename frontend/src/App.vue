@@ -17,6 +17,10 @@ const menuItems = [
   { path: '/calibration', name: '校准管理', icon: 'Aim' },
   { path: '/diagnosis', name: '智能诊断', icon: 'Stethoscope' },
   { path: '/beampattern', name: '波束方向图', icon: 'Signal' },
+  { path: '/deformation', name: '形变监测', icon: 'TrendCharts' },
+  { path: '/interference', name: '共址干扰', icon: 'Lightning' },
+  { path: '/pa-efficiency', name: '功放效率', icon: 'LightningBolt' },
+  { path: '/spectrum', name: '频谱扫描', icon: 'SemiSelect' },
   { path: '/ecpri', name: 'ECPRI数据', icon: 'Connection' },
 ]
 

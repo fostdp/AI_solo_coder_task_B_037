@@ -337,4 +337,154 @@ public class InfluxDBRepository : IInfluxDBRepository
             return false;
         }
     }
+
+    public async Task WriteSensorMetricAsync(string stationId, SensorData sensorData,
+        CancellationToken cancellationToken = default)
+    {
+        using var writeApi = _client.GetWriteApiAsync();
+
+        var point = PointData.Measurement("sensor_metrics")
+            .Tag("station_id", stationId)
+            .Tag("sensor_type", sensorData.SensorType)
+            .Tag("sensor_index", sensorData.SensorIndex.ToString())
+            .Field("tilt_x", sensorData.TiltAngleX)
+            .Field("tilt_y", sensorData.TiltAngleY)
+            .Field("tilt_z", sensorData.TiltAngleZ)
+            .Field("tilt_magnitude", sensorData.TiltMagnitude)
+            .Field("strain", sensorData.StrainValue)
+            .Field("temperature", sensorData.Temperature)
+            .Field("wind_speed", sensorData.WindSpeed)
+            .Timestamp(sensorData.Timestamp, WritePrecision.Ns);
+
+        await writeApi.WritePointAsync(point, _options.Buckets.MetricsRaw, _options.Org, cancellationToken);
+    }
+
+    public async Task<IEnumerable<SensorMetric>> GetSensorMetricsAsync(
+        string stationId, DateTime startTime, DateTime endTime,
+        CancellationToken cancellationToken = default)
+    {
+        var bucket = SelectBucketByTimeRange(startTime, endTime);
+        var query = $@"
+            from(bucket: ""{bucket}"")
+                |> range(start: {DateTimeToRFC3339(startTime)}, stop: {DateTimeToRFC3339(endTime)})
+                |> filter(fn: (r) => r._measurement == ""sensor_metrics"" and r.station_id == ""{stationId}"")
+                |> pivot(rowKey:[""_time""], columnKey: [""_field""], valueColumn: ""_value"")
+                |> sort(columns: [""_time""])
+        ";
+
+        var queryApi = _client.GetQueryApi();
+        var tables = await queryApi.QueryAsync(query, _options.Org, cancellationToken);
+
+        var metrics = new List<SensorMetric>();
+        foreach (var table in tables)
+        {
+            foreach (var record in table.Records)
+            {
+                var metric = new SensorMetric
+                {
+                    StationId = record.GetValueByKey("station_id")?.ToString() ?? "",
+                    SensorType = record.GetValueByKey("sensor_type")?.ToString() ?? "",
+                    SensorIndex = int.Parse(record.GetValueByKey("sensor_index")?.ToString() ?? "0"),
+                    Timestamp = record.GetTime().GetValueOrDefault().ToDateTimeUtc()
+                };
+
+                double.TryParse(record.GetValueByKey("tilt_x")?.ToString(), out var tiltX);
+                double.TryParse(record.GetValueByKey("tilt_y")?.ToString(), out var tiltY);
+                double.TryParse(record.GetValueByKey("tilt_z")?.ToString(), out var tiltZ);
+                double.TryParse(record.GetValueByKey("strain")?.ToString(), out var strain);
+                double.TryParse(record.GetValueByKey("temperature")?.ToString(), out var temp);
+                double.TryParse(record.GetValueByKey("wind_speed")?.ToString(), out var wind);
+
+                metric.TiltAngleX = tiltX;
+                metric.TiltAngleY = tiltY;
+                metric.TiltAngleZ = tiltZ;
+                metric.StrainValue = strain;
+                metric.Temperature = temp;
+                metric.WindSpeed = wind;
+
+                metrics.Add(metric);
+            }
+        }
+
+        return metrics;
+    }
+
+    public async Task WriteInterferenceMetricAsync(string stationId, CoSiteInterferenceResult result,
+        CancellationToken cancellationToken = default)
+    {
+        using var writeApi = _client.GetWriteApiAsync();
+
+        var point = PointData.Measurement("interference_metrics")
+            .Tag("station_id", stationId)
+            .Tag("interfering_operator", result.InterferingOperator ?? "unknown")
+            .Tag("isolation_sufficient", result.IsIsolationSufficient.ToString())
+            .Field("isolation_db", result.IsolationDb)
+            .Field("coupling_coefficient", result.CouplingCoefficient)
+            .Field("interference_vector_x", result.InterferenceVectorX)
+            .Field("interference_vector_y", result.InterferenceVectorY)
+            .Field("interference_vector_z", result.InterferenceVectorZ)
+            .Timestamp(DateTime.UtcNow, WritePrecision.Ns);
+
+        await writeApi.WritePointAsync(point, _options.Buckets.MetricsRaw, _options.Org, cancellationToken);
+    }
+
+    public async Task WriteEfficiencyMetricAsync(string stationId, PaEfficiencyResult result,
+        CancellationToken cancellationToken = default)
+    {
+        using var writeApi = _client.GetWriteApiAsync();
+
+        var point = PointData.Measurement("pa_efficiency_metrics")
+            .Tag("station_id", stationId)
+            .Tag("channel_id", result.ChannelId.ToString())
+            .Tag("needs_replacement", result.NeedsReplacement.ToString())
+            .Field("efficiency_percent", result.EfficiencyPercent)
+            .Field("decay_rate", result.EfficiencyDecayRate)
+            .Field("predicted_remaining_hours", result.PredictedRemainingHours)
+            .Timestamp(DateTime.UtcNow, WritePrecision.Ns);
+
+        await writeApi.WritePointAsync(point, _options.Buckets.MetricsRaw, _options.Org, cancellationToken);
+    }
+
+    public async Task WriteSpectrumMetricAsync(string stationId, SpectrumScanResult result,
+        CancellationToken cancellationToken = default)
+    {
+        using var writeApi = _client.GetWriteApiAsync();
+
+        var points = new List<PointData>();
+        for (int i = 0; i < result.FrequencyPointsMhz.Length; i++)
+        {
+            var point = PointData.Measurement("spectrum_metrics")
+                .Tag("station_id", stationId)
+                .Tag("scan_index", i.ToString())
+                .Field("frequency_mhz", result.FrequencyPointsMhz[i])
+                .Field("power_dbm", result.PowerLevelsDbm[i])
+                .Timestamp(DateTime.UtcNow, WritePrecision.Ns);
+            points.Add(point);
+        }
+
+        if (result.InterferenceFrequenciesMhz != null && result.InterferenceFrequenciesMhz.Length > 0)
+        {
+            for (int i = 0; i < result.InterferenceFrequenciesMhz.Length; i++)
+            {
+                var direction = result.InterferenceDirectionsDeg != null && i < result.InterferenceDirectionsDeg.Length
+                    ? result.InterferenceDirectionsDeg[i] : 0;
+                var nullAngle = result.NullAnglesDeg != null && i < result.NullAnglesDeg.Length
+                    ? result.NullAnglesDeg[i] : 0;
+                var nullDepth = result.NullDepthsDb != null && i < result.NullDepthsDb.Length
+                    ? result.NullDepthsDb[i] : 0;
+
+                var point = PointData.Measurement("interference_detection")
+                    .Tag("station_id", stationId)
+                    .Tag("interference_index", i.ToString())
+                    .Field("frequency_mhz", result.InterferenceFrequenciesMhz[i])
+                    .Field("direction_deg", direction)
+                    .Field("null_angle_deg", nullAngle)
+                    .Field("null_depth_db", nullDepth)
+                    .Timestamp(DateTime.UtcNow, WritePrecision.Ns);
+                points.Add(point);
+            }
+        }
+
+        await writeApi.WritePointsAsync(points, _options.Buckets.MetricsRaw, _options.Org, cancellationToken);
+    }
 }
