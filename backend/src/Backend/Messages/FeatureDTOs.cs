@@ -71,6 +71,18 @@ public record CoSiteInterferenceResult
     public double VectorZ { get; set; }
 }
 
+public record ChannelMetric
+{
+    public string ChannelId { get; set; } = string.Empty;
+    public int ChannelIndex { get; set; }
+    public double TxPower { get; set; }
+    public double PaTemperature { get; set; }
+    public double Amplitude { get; set; }
+    public double Phase { get; set; }
+    public double Swr { get; set; }
+    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+}
+
 public record PaEfficiencyRequest
 {
     public Guid StationId { get; set; }
@@ -83,9 +95,16 @@ public record PaEfficiencyResult
     public Guid StationId { get; set; }
     public Guid ChannelId { get; set; }
     public int ChannelIndex { get; set; }
+    public double PaTemperature { get; set; }
+    public double OutputPowerDbm { get; set; }
+    public double InputPowerDbm { get; set; }
+    public double GainDb { get; set; }
     public double EfficiencyPercent { get; set; }
     public double PowerAddedEfficiencyPercent { get; set; }
-    public double GainDb { get; set; }
+    public double DcCurrentA { get; set; }
+    public double DcVoltageV { get; set; }
+    public double DcPowerW { get; set; }
+    public double RfPowerW { get; set; }
     public double EfficiencyDecayRate { get; set; }
     public double PredictedRemainingHours { get; set; }
     public bool NeedsReplacement { get; set; }
@@ -109,6 +128,7 @@ public record SpectrumScanResult
     public double[] FrequencyPointsMhz { get; set; } = Array.Empty<double>();
     public double[] PowerLevelsDbm { get; set; } = Array.Empty<double>();
     public int InterferenceCount { get; set; }
+    public string InterferenceDetails { get; set; } = string.Empty;
     public double[] InterferenceFrequenciesMhz { get; set; } = Array.Empty<double>();
     public double[] InterferencePowersDbm { get; set; } = Array.Empty<double>();
     public double[] InterferenceDirectionsDeg { get; set; } = Array.Empty<double>();
@@ -116,4 +136,5 @@ public record SpectrumScanResult
     public double[] NullAnglesDeg { get; set; } = Array.Empty<double>();
     public double[] NullDepthsDb { get; set; } = Array.Empty<double>();
     public double NoiseFloorDbm { get; set; }
+    public double SpuriousFreeDynamicRangeDb { get; set; }
 }
