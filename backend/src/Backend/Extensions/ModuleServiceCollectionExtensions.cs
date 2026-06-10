@@ -4,16 +4,20 @@ using AntennaMonitoring.Modules.EcpriIngestor;
 using AntennaMonitoring.Modules.CalibrationEngine;
 using AntennaMonitoring.Modules.HealthDiagnoser;
 using AntennaMonitoring.Modules.AlarmForwarder;
-using AntennaMonitoring.Modules.DeformationMonitor;
-using AntennaMonitoring.Modules.CoSiteInterferenceAnalyzer;
-using AntennaMonitoring.Modules.PaEfficiencyEvaluator;
-using AntennaMonitoring.Modules.SpectrumScanner;
 using AntennaMonitoring.Models;
 using AntennaMonitoring.Repositories;
 using Microsoft.Extensions.Configuration;
 using MQTTnet;
 using MQTTnet.Client;
 using MQTTnet.Extensions.ManagedClient;
+using DeformationMonitor.Module.Extensions;
+using CoSiteInterference.Module.Extensions;
+using PaEfficiencyTracker.Module.Extensions;
+using SpectrumScanner.Module.Extensions;
+using DeformationMonitor.Module.Models;
+using CoSiteInterference.Module.Models;
+using PaEfficiencyTracker.Module.Models;
+using SpectrumScanner.Module.Models;
 
 namespace Microsoft.Extensions.DependencyInjection;
 
@@ -30,14 +34,6 @@ public static class ModuleServiceCollectionExtensions
 
         services.Configure<AlgorithmParameterOptions>(
             configuration.GetSection("AlgorithmParameters"));
-        services.Configure<DeformationOptions>(
-            configuration.GetSection("Deformation"));
-        services.Configure<CoSiteInterferenceOptions>(
-            configuration.GetSection("CoSiteInterference"));
-        services.Configure<PaEfficiencyOptions>(
-            configuration.GetSection("PaEfficiency"));
-        services.Configure<SpectrumScanOptions>(
-            configuration.GetSection("SpectrumScan"));
 
         services.AddSingleton<IDataChannels, DataChannels>();
 
@@ -47,10 +43,15 @@ public static class ModuleServiceCollectionExtensions
         services.AddCalibrationEngineModule();
         services.AddHealthDiagnoserModule();
         services.AddAlarmForwarderModule(configuration);
-        services.AddDeformationMonitorModule(configuration);
-        services.AddCoSiteInterferenceAnalyzerModule(configuration);
-        services.AddPaEfficiencyEvaluatorModule(configuration);
-        services.AddSpectrumScannerModule(configuration);
+
+        services.AddDeformationMonitor(configuration.GetSection("Deformation"));
+        services.AddCoSiteInterferenceAnalyzer(configuration.GetSection("CoSiteInterference"));
+        services.AddPaEfficiencyEvaluator(configuration.GetSection("PaEfficiency"));
+        services.AddSpectrumScanner(configuration.GetSection("SpectrumScan"));
+
+        services.AddSpectrumScannerRepositories(
+            sp => sp.GetRequiredService<ISpectrumScanRecordRepository>(),
+            sp => sp.GetRequiredService<IChannelRepository>());
 
         return services;
     }
@@ -121,42 +122,6 @@ public static class ModuleServiceCollectionExtensions
         services.AddScoped<ICoSiteAntennaRepository, CoSiteAntennaRepository>();
         services.AddScoped<IPaEfficiencyRecordRepository, PaEfficiencyRecordRepository>();
         services.AddScoped<ISpectrumScanRecordRepository, SpectrumScanRecordRepository>();
-        return services;
-    }
-
-    private static IServiceCollection AddDeformationMonitorModule(
-        this IServiceCollection services,
-        IConfiguration configuration)
-    {
-        services.AddScoped<IDeformationMonitor, DeformationMonitor>();
-        services.AddHostedService<DeformationMonitorHostedService>();
-        return services;
-    }
-
-    private static IServiceCollection AddCoSiteInterferenceAnalyzerModule(
-        this IServiceCollection services,
-        IConfiguration configuration)
-    {
-        services.AddScoped<ICoSiteInterferenceAnalyzer, CoSiteInterferenceAnalyzer>();
-        services.AddHostedService<CoSiteInterferenceAnalyzerHostedService>();
-        return services;
-    }
-
-    private static IServiceCollection AddPaEfficiencyEvaluatorModule(
-        this IServiceCollection services,
-        IConfiguration configuration)
-    {
-        services.AddScoped<IPaEfficiencyEvaluator, PaEfficiencyEvaluator>();
-        services.AddHostedService<PaEfficiencyEvaluatorHostedService>();
-        return services;
-    }
-
-    private static IServiceCollection AddSpectrumScannerModule(
-        this IServiceCollection services,
-        IConfiguration configuration)
-    {
-        services.AddScoped<ISpectrumScanner, SpectrumScanner>();
-        services.AddHostedService<SpectrumScannerHostedService>();
         return services;
     }
 }

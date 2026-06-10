@@ -1,7 +1,8 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
 using AntennaMonitoring.Repositories;
-using AntennaMonitoring.Modules.CoSiteInterferenceAnalyzer;
+using CoSiteInterference.Module;
+using CoSiteInterference.Module.Models;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using NetTopologySuite.Geometries;

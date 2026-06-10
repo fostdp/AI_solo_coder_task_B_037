@@ -23,7 +23,11 @@
     "axios": "^1.6.2",
     "dayjs": "^1.11.10",
     "element-plus": "^2.4.4",
-    "@element-plus/icons-vue": "^2.3.1"
+    "@element-plus/icons-vue": "^2.3.1",
+    "@antenna-monitor/deformation-monitor": "file:./packages/deformation-monitor",
+    "@antenna-monitor/co-site-interference": "file:./packages/co-site-interference",
+    "@antenna-monitor/pa-efficiency-tracker": "file:./packages/pa-efficiency-tracker",
+    "@antenna-monitor/spectrum-scanner": "file:./packages/spectrum-scanner"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",

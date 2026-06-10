@@ -1,7 +1,8 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
 using AntennaMonitoring.Repositories;
-using AntennaMonitoring.Modules.DeformationMonitor;
+using DeformationMonitor.Module;
+using DeformationMonitor.Module.Models;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 

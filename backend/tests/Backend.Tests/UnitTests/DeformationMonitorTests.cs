@@ -1,12 +1,20 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
-using AntennaMonitoring.Modules.DeformationMonitor;
 using AntennaMonitoring.Repositories;
+using DeformationMonitor.Module;
+using DeformationMonitor.Module.Models;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+
+using DeformationMonitor = DeformationMonitor.Module.DeformationMonitor;
+using IDeformationMonitor = DeformationMonitor.Module.IDeformationMonitor;
+using DeformationOptions = DeformationMonitor.Module.Models.DeformationOptions;
+using SensorData = DeformationMonitor.Module.Models.SensorData;
+using DeformationRequest = DeformationMonitor.Module.Models.DeformationRequest;
+using DeformationResult = DeformationMonitor.Module.Models.DeformationResult;
 
 namespace AntennaMonitoring.Tests.UnitTests;
 

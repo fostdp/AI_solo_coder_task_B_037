@@ -1,12 +1,20 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
-using AntennaMonitoring.Modules.CoSiteInterferenceAnalyzer;
 using AntennaMonitoring.Repositories;
+using CoSiteInterference.Module;
+using CoSiteInterference.Module.Models;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+
+using CoSiteInterferenceAnalyzer = CoSiteInterference.Module.CoSiteInterferenceAnalyzer;
+using ICoSiteInterferenceAnalyzer = CoSiteInterference.Module.ICoSiteInterferenceAnalyzer;
+using CoSiteInterferenceOptions = CoSiteInterference.Module.Models.CoSiteInterferenceOptions;
+using CoSiteAntenna = CoSiteInterference.Module.Models.CoSiteAntenna;
+using CoSiteInterferenceRequest = CoSiteInterference.Module.Models.CoSiteInterferenceRequest;
+using CoSiteInterferenceResult = CoSiteInterference.Module.Models.CoSiteInterferenceResult;
 
 namespace AntennaMonitoring.Tests.UnitTests;
 

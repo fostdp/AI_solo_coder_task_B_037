@@ -1,12 +1,20 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
-using AntennaMonitoring.Modules.PaEfficiencyEvaluator;
 using AntennaMonitoring.Repositories;
+using PaEfficiencyTracker.Module;
+using PaEfficiencyTracker.Module.Models;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+
+using PaEfficiencyEvaluator = PaEfficiencyTracker.Module.PaEfficiencyEvaluator;
+using IPaEfficiencyEvaluator = PaEfficiencyTracker.Module.IPaEfficiencyEvaluator;
+using PaEfficiencyOptions = PaEfficiencyTracker.Module.Models.PaEfficiencyOptions;
+using ChannelMetric = PaEfficiencyTracker.Module.Models.ChannelMetric;
+using PaEfficiencyRequest = PaEfficiencyTracker.Module.Models.PaEfficiencyRequest;
+using PaEfficiencyResult = PaEfficiencyTracker.Module.Models.PaEfficiencyResult;
 
 namespace AntennaMonitoring.Tests.UnitTests;
 

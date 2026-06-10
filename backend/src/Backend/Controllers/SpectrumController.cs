@@ -1,7 +1,8 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
 using AntennaMonitoring.Repositories;
-using AntennaMonitoring.Modules.SpectrumScanner;
+using SpectrumScanner.Module;
+using SpectrumScanner.Module.Models;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 

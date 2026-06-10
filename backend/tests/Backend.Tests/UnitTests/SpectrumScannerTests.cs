@@ -1,12 +1,19 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
-using AntennaMonitoring.Modules.SpectrumScanner;
 using AntennaMonitoring.Repositories;
+using SpectrumScanner.Module;
+using SpectrumScanner.Module.Models;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+
+using SpectrumScanner = SpectrumScanner.Module.SpectrumScanner;
+using ISpectrumScanner = SpectrumScanner.Module.ISpectrumScanner;
+using SpectrumScanOptions = SpectrumScanner.Module.Models.SpectrumScanOptions;
+using SpectrumScanRequest = SpectrumScanner.Module.Models.SpectrumScanRequest;
+using SpectrumScanResult = SpectrumScanner.Module.Models.SpectrumScanResult;
 
 namespace AntennaMonitoring.Tests.UnitTests;
 

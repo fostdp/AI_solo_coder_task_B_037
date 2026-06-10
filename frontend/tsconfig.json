@@ -17,10 +17,23 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@antenna-monitor/deformation-monitor": ["packages/deformation-monitor/src"],
+      "@antenna-monitor/co-site-interference": ["packages/co-site-interference/src"],
+      "@antenna-monitor/pa-efficiency-tracker": ["packages/pa-efficiency-tracker/src"],
+      "@antenna-monitor/spectrum-scanner": ["packages/spectrum-scanner/src"]
     },
     "types": ["node", "leaflet", "three"]
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue",
+    "packages/**/*.ts",
+    "packages/**/*.d.ts",
+    "packages/**/*.tsx",
+    "packages/**/*.vue"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

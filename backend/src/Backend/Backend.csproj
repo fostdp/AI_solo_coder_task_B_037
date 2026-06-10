@@ -39,4 +39,11 @@
     <PackageReference Include="prometheus-net.SystemMetrics" Version="3.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\modules\deformation_monitor\DeformationMonitor.Module.csproj" />
+    <ProjectReference Include="..\..\modules\co_site_interference\CoSiteInterference.Module.csproj" />
+    <ProjectReference Include="..\..\modules\pa_efficiency_tracker\PaEfficiencyTracker.Module.csproj" />
+    <ProjectReference Include="..\..\modules\spectrum_scanner\SpectrumScanner.Module.csproj" />
+  </ItemGroup>
+
 </Project>

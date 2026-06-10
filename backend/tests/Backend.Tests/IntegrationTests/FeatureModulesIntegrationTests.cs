@@ -1,15 +1,35 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
-using AntennaMonitoring.Modules.CoSiteInterferenceAnalyzer;
-using AntennaMonitoring.Modules.DeformationMonitor;
-using AntennaMonitoring.Modules.PaEfficiencyEvaluator;
-using AntennaMonitoring.Modules.SpectrumScanner;
 using AntennaMonitoring.Repositories;
+using DeformationMonitor.Module;
+using DeformationMonitor.Module.Models;
+using CoSiteInterference.Module;
+using CoSiteInterference.Module.Models;
+using PaEfficiencyTracker.Module;
+using PaEfficiencyTracker.Module.Models;
+using SpectrumScanner.Module;
+using SpectrumScanner.Module.Models;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+
+using DeformationMonitor = DeformationMonitor.Module.DeformationMonitor;
+using CoSiteInterferenceAnalyzer = CoSiteInterference.Module.CoSiteInterferenceAnalyzer;
+using PaEfficiencyEvaluator = PaEfficiencyTracker.Module.PaEfficiencyEvaluator;
+using SpectrumScanner = SpectrumScanner.Module.SpectrumScanner;
+using DeformationOptions = DeformationMonitor.Module.Models.DeformationOptions;
+using CoSiteInterferenceOptions = CoSiteInterference.Module.Models.CoSiteInterferenceOptions;
+using PaEfficiencyOptions = PaEfficiencyTracker.Module.Models.PaEfficiencyOptions;
+using SpectrumScanOptions = SpectrumScanner.Module.Models.SpectrumScanOptions;
+using SensorData = DeformationMonitor.Module.Models.SensorData;
+using DeformationRequest = DeformationMonitor.Module.Models.DeformationRequest;
+using CoSiteAntenna = CoSiteInterference.Module.Models.CoSiteAntenna;
+using CoSiteInterferenceRequest = CoSiteInterference.Module.Models.CoSiteInterferenceRequest;
+using ChannelMetric = PaEfficiencyTracker.Module.Models.ChannelMetric;
+using PaEfficiencyRequest = PaEfficiencyTracker.Module.Models.PaEfficiencyRequest;
+using SpectrumScanRequest = SpectrumScanner.Module.Models.SpectrumScanRequest;
 
 namespace AntennaMonitoring.Tests.IntegrationTests;
 

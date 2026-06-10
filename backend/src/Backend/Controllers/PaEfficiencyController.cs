@@ -1,7 +1,8 @@
 using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
 using AntennaMonitoring.Repositories;
-using AntennaMonitoring.Modules.PaEfficiencyEvaluator;
+using PaEfficiencyTracker.Module;
+using PaEfficiencyTracker.Module.Models;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
