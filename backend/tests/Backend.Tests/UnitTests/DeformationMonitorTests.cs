@@ -757,4 +757,170 @@ public class DeformationMonitorTests : TestBase
     }
 
     #endregion
+
+    #region 根因验证测试 - 传感器数据缺失时计算发散修复
+
+    [Fact]
+    public async Task RunDeformationAnalysis_WithNaNData_ShouldDetectAnomaly()
+    {
+        var sensorDatas = new List<SensorData>
+        {
+            new() { StationId = _testStationId, SensorIndex = 0, TiltAngleX = 0.5, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 1, TiltAngleX = double.NaN, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 2, TiltAngleX = 0.52, TiltAngleY = 0.31, TiltAngleZ = 0.12, StrainValue = 0.00052, WindSpeed = 11, Temperature = 26 },
+            new() { StationId = _testStationId, SensorIndex = 3, TiltAngleX = 0.48, TiltAngleY = 0.29, TiltAngleZ = 0.09, StrainValue = 0.00048, WindSpeed = 9, Temperature = 24 },
+            new() { StationId = _testStationId, SensorIndex = 4, TiltAngleX = 0.51, TiltAngleY = 0.32, TiltAngleZ = 0.11, StrainValue = 0.00051, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 5, TiltAngleX = 0.49, TiltAngleY = 0.30, TiltAngleZ = 0.10, StrainValue = 0.00049, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 6, TiltAngleX = 0.50, TiltAngleY = 0.31, TiltAngleZ = 0.10, StrainValue = 0.00050, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 7, TiltAngleX = 0.51, TiltAngleY = 0.30, TiltAngleZ = 0.11, StrainValue = 0.00051, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 8, TiltAngleX = 0.49, TiltAngleY = 0.29, TiltAngleZ = 0.09, StrainValue = 0.00049, WindSpeed = 10, Temperature = 25 }
+        };
+
+        var request = new DeformationRequest
+        {
+            StationId = _testStationId,
+            SensorData = sensorDatas,
+            Channels = Array.Empty<Channel>()
+        };
+
+        var results = await _monitor.RunDeformationAnalysisAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(9);
+
+        var resultWithNaN = results.First(r => r.SensorIndex == 1);
+        resultWithNaN.IsInterpolated.Should().BeTrue();
+
+        foreach (var result in results)
+        {
+            double.IsNaN(result.CalculatedDisplacementMm).Should().BeFalse();
+            double.IsInfinity(result.CalculatedDisplacementMm).Should().BeFalse();
+            result.CalculatedDisplacementMm.Should().BeGreaterThan(0);
+            result.CalculatedDisplacementMm.Should().BeLessThan(100);
+        }
+
+        VerifyLog(_mockLogger, LogLevel.Warning, "anomalous", Times.AtLeastOnce());
+        VerifyLog(_mockLogger, LogLevel.Information, "Interpolated", Times.AtLeastOnce());
+    }
+
+    [Fact]
+    public async Task RunDeformationAnalysis_WithOutOfRangeValues_ShouldDetectPhysicalAnomaly()
+    {
+        var sensorDatas = new List<SensorData>
+        {
+            new() { StationId = _testStationId, SensorIndex = 0, TiltAngleX = 0.5, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 1, TiltAngleX = 20.0, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 2, TiltAngleX = 0.52, TiltAngleY = 0.31, TiltAngleZ = 0.12, StrainValue = 0.00052, WindSpeed = 11, Temperature = 26 },
+            new() { StationId = _testStationId, SensorIndex = 3, TiltAngleX = 0.48, TiltAngleY = 0.29, TiltAngleZ = 0.09, StrainValue = 0.00048, WindSpeed = 9, Temperature = 24 },
+            new() { StationId = _testStationId, SensorIndex = 4, TiltAngleX = 0.51, TiltAngleY = 0.32, TiltAngleZ = 0.11, StrainValue = 0.00051, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 5, TiltAngleX = 0.49, TiltAngleY = 0.30, TiltAngleZ = 0.10, StrainValue = 0.00049, WindSpeed = -5, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 6, TiltAngleX = 0.50, TiltAngleY = 0.31, TiltAngleZ = 0.10, StrainValue = 0.00050, WindSpeed = 10, Temperature = 150 },
+            new() { StationId = _testStationId, SensorIndex = 7, TiltAngleX = 0.51, TiltAngleY = 0.30, TiltAngleZ = 0.11, StrainValue = 0.01, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 8, TiltAngleX = 0.49, TiltAngleY = 0.29, TiltAngleZ = 0.09, StrainValue = 0.00049, WindSpeed = 10, Temperature = 25 }
+        };
+
+        var request = new DeformationRequest
+        {
+            StationId = _testStationId,
+            SensorData = sensorDatas,
+            Channels = Array.Empty<Channel>()
+        };
+
+        var results = await _monitor.RunDeformationAnalysisAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(9);
+
+        var anomalies = results.Where(r => r.IsInterpolated).ToList();
+        anomalies.Count.Should().BeGreaterOrEqualTo(4);
+
+        foreach (var result in results)
+        {
+            double.IsNaN(result.CalculatedDisplacementMm).Should().BeFalse();
+            double.IsInfinity(result.CalculatedDisplacementMm).Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task RunDeformationAnalysis_WithZScoreOutliers_ShouldApplyInterpolation()
+    {
+        var baseSensorData = Enumerable.Range(0, 9).Select(i => new SensorData
+        {
+            StationId = _testStationId,
+            SensorIndex = i,
+            TiltAngleX = 0.5 + i * 0.001,
+            TiltAngleY = 0.3 + i * 0.001,
+            TiltAngleZ = 0.1 + i * 0.001,
+            StrainValue = 0.0005 + i * 0.00001,
+            WindSpeed = 10,
+            Temperature = 25
+        }).ToList();
+
+        baseSensorData[4] = baseSensorData[4] with
+        {
+            TiltAngleX = 0.5 + 5.0,
+            StrainValue = 0.0005 + 0.01
+        };
+
+        var request = new DeformationRequest
+        {
+            StationId = _testStationId,
+            SensorData = baseSensorData,
+            Channels = Array.Empty<Channel>()
+        };
+
+        var results = await _monitor.RunDeformationAnalysisAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(9);
+
+        var centerResult = results.First(r => r.SensorIndex == 4);
+        centerResult.IsInterpolated.Should().BeTrue();
+
+        var neighbors = results.Where(r => r.SensorIndex != 4 && !r.IsInterpolated).ToList();
+        var avgTiltX = neighbors.Average(r => r.TiltAngleX);
+
+        centerResult.TiltAngleX.Should().BeApproximately(avgTiltX, 0.5);
+    }
+
+    [Fact]
+    public async Task RunDeformationAnalysis_MultipleMissingSensors_ShouldInterpolateCorrectly()
+    {
+        var sensorDatas = new List<SensorData>
+        {
+            new() { StationId = _testStationId, SensorIndex = 0, TiltAngleX = double.NaN, TiltAngleY = double.NaN, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 1, TiltAngleX = 0.5, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 2, TiltAngleX = double.NaN, TiltAngleY = double.NaN, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 3, TiltAngleX = 0.5, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 4, TiltAngleX = 0.5, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 5, TiltAngleX = 0.5, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 6, TiltAngleX = double.NaN, TiltAngleY = double.NaN, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 7, TiltAngleX = 0.5, TiltAngleY = 0.3, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 },
+            new() { StationId = _testStationId, SensorIndex = 8, TiltAngleX = double.NaN, TiltAngleY = double.NaN, TiltAngleZ = 0.1, StrainValue = 0.0005, WindSpeed = 10, Temperature = 25 }
+        };
+
+        var request = new DeformationRequest
+        {
+            StationId = _testStationId,
+            SensorData = sensorDatas,
+            Channels = Array.Empty<Channel>()
+        };
+
+        var results = await _monitor.RunDeformationAnalysisAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(9);
+
+        var interpolatedResults = results.Where(r => r.IsInterpolated).ToList();
+        interpolatedResults.Should().HaveCount(4);
+
+        foreach (var result in results)
+        {
+            double.IsNaN(result.CalculatedDisplacementMm).Should().BeFalse();
+            double.IsInfinity(result.CalculatedDisplacementMm).Should().BeFalse();
+            result.CalculatedDisplacementMm.Should().BeGreaterThan(0);
+        }
+    }
+
+    #endregion
 }

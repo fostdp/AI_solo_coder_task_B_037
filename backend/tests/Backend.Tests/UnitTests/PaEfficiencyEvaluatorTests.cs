@@ -1091,4 +1091,286 @@ public class PaEfficiencyEvaluatorTests : TestBase
     }
 
     #endregion
+
+    #region 根因验证测试 - 温度传感器漂移时偏差大修复
+
+    [Fact]
+    public async Task RunEfficiencyEvaluation_WithDriftedTemperature_ShouldApplyCalibration()
+    {
+        var channels = Enumerable.Range(0, 8).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 4,
+            ColumnIndex = i % 4,
+            TxPower = 43.0
+        }).ToList();
+
+        var targetChannel = channels[3];
+
+        var historyRecords = Enumerable.Range(0, 10).Select(i => new PaEfficiencyRecord
+        {
+            Id = Guid.NewGuid(),
+            StationId = _testStationId,
+            ChannelId = targetChannel.Id,
+            ChannelIndex = targetChannel.ChannelIndex,
+            PaTemperature = 45.0,
+            EfficiencyPercent = 42.0,
+            MeasurementTime = DateTime.UtcNow.AddHours(-i)
+        }).ToList();
+
+        var recentMetrics = new List<ChannelMetric>();
+
+        for (int i = 0; i < 8; i++)
+        {
+            var channel = channels[i];
+            var temp = i == 3 ? 45.0 + 10.0 : 45.0;
+
+            for (int j = 0; j < 5; j++)
+            {
+                recentMetrics.Add(new ChannelMetric
+                {
+                    ChannelIndex = channel.ChannelIndex,
+                    ChannelId = channel.Id.ToString(),
+                    TxPower = 43.0,
+                    PaTemperature = temp + (j - 2) * 0.5,
+                    Timestamp = DateTime.UtcNow.AddMinutes(-j)
+                });
+            }
+        }
+
+        var request = new PaEfficiencyRequest
+        {
+            StationId = _testStationId,
+            Channels = channels,
+            RecentMetrics = recentMetrics
+        };
+
+        _mockEfficiencyRepo
+            .Setup(r => r.GetByChannelIdAndTimeRangeAsync(
+                targetChannel.Id, It.IsAny<DateTime>(), It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(historyRecords.AsReadOnly());
+
+        _mockEfficiencyRepo
+            .Setup(r => r.GetByChannelIdAndTimeRangeAsync(
+                It.Is<Guid>(id => id != targetChannel.Id), It.IsAny<DateTime>(), It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<PaEfficiencyRecord>().AsReadOnly());
+
+        var results = await _evaluator.RunEfficiencyEvaluationAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(8);
+
+        var targetResult = results.First(r => r.ChannelIndex == 3);
+
+        targetResult.TemperatureDriftDetected.Should().BeTrue();
+        targetResult.TemperatureDriftAmount.Should().BeApproximately(10.0, 3.0);
+        targetResult.RawPaTemperature.Should().BeApproximately(55.0, 1.0);
+        targetResult.PaTemperature.Should().BeLessThan(targetResult.RawPaTemperature);
+        targetResult.PaTemperature.Should().BeApproximately(48.0, 3.0);
+
+        targetResult.EfficiencyPercent.Should().BeGreaterThan(0);
+        targetResult.EfficiencyPercent.Should().BeLessThan(100);
+
+        VerifyLog(_mockLogger, LogLevel.Warning, "drift", Times.AtLeastOnce());
+    }
+
+    [Fact]
+    public async Task RunEfficiencyEvaluation_StableTemperature_ShouldNotApplyCalibration()
+    {
+        var channels = Enumerable.Range(0, 8).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 4,
+            ColumnIndex = i % 4,
+            TxPower = 43.0
+        }).ToList();
+
+        var recentMetrics = new List<ChannelMetric>();
+
+        for (int i = 0; i < 8; i++)
+        {
+            for (int j = 0; j < 5; j++)
+            {
+                recentMetrics.Add(new ChannelMetric
+                {
+                    ChannelIndex = i,
+                    ChannelId = channels[i].Id.ToString(),
+                    TxPower = 43.0,
+                    PaTemperature = 45.0 + (j - 2) * 0.3,
+                    Timestamp = DateTime.UtcNow.AddMinutes(-j)
+                });
+            }
+        }
+
+        var request = new PaEfficiencyRequest
+        {
+            StationId = _testStationId,
+            Channels = channels,
+            RecentMetrics = recentMetrics
+        };
+
+        _mockEfficiencyRepo
+            .Setup(r => r.GetByChannelIdAndTimeRangeAsync(
+                It.IsAny<Guid>(), It.IsAny<DateTime>(), It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<PaEfficiencyRecord>().AsReadOnly());
+
+        var results = await _evaluator.RunEfficiencyEvaluationAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(8);
+
+        foreach (var result in results)
+        {
+            result.TemperatureDriftDetected.Should().BeFalse();
+            result.TemperatureDriftAmount.Should().BeApproximately(0, 0.5);
+            result.PaTemperature.Should().BeApproximately(result.RawPaTemperature, 0.5);
+            result.EfficiencyPercent.Should().BeGreaterThan(0);
+            result.EfficiencyPercent.Should().BeLessThan(100);
+        }
+    }
+
+    [Fact]
+    public async Task RunEfficiencyEvaluation_MultipleChannelsWithDrift_ShouldCalibrateEach()
+    {
+        var channels = Enumerable.Range(0, 16).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 4,
+            ColumnIndex = i % 4,
+            TxPower = 43.0
+        }).ToList();
+
+        var recentMetrics = new List<ChannelMetric>();
+
+        for (int i = 0; i < 16; i++)
+        {
+            double baseTemp;
+            if (i == 2 || i == 7 || i == 12)
+            {
+                baseTemp = 45.0 + 8.0;
+            }
+            else
+            {
+                baseTemp = 45.0;
+            }
+
+            for (int j = 0; j < 5; j++)
+            {
+                recentMetrics.Add(new ChannelMetric
+                {
+                    ChannelIndex = i,
+                    ChannelId = channels[i].Id.ToString(),
+                    TxPower = 43.0,
+                    PaTemperature = baseTemp + (j - 2) * 0.5,
+                    Timestamp = DateTime.UtcNow.AddMinutes(-j)
+                });
+            }
+        }
+
+        var request = new PaEfficiencyRequest
+        {
+            StationId = _testStationId,
+            Channels = channels,
+            RecentMetrics = recentMetrics
+        };
+
+        _mockEfficiencyRepo
+            .Setup(r => r.GetByChannelIdAndTimeRangeAsync(
+                It.IsAny<Guid>(), It.IsAny<DateTime>(), It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<PaEfficiencyRecord>().AsReadOnly());
+
+        var results = await _evaluator.RunEfficiencyEvaluationAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(16);
+
+        var driftChannels = results.Where(r => r.TemperatureDriftDetected).ToList();
+        driftChannels.Count.Should().BeGreaterOrEqualTo(3);
+
+        foreach (var result in driftChannels)
+        {
+            result.PaTemperature.Should().BeLessThan(result.RawPaTemperature);
+            result.TemperatureDriftAmount.Should().BeGreaterThan(3.0);
+        }
+
+        foreach (var result in results)
+        {
+            double.IsNaN(result.EfficiencyPercent).Should().BeFalse();
+            double.IsInfinity(result.EfficiencyPercent).Should().BeFalse();
+            result.EfficiencyPercent.Should().BeGreaterThan(0);
+        }
+    }
+
+    [Fact]
+    public async Task RunEfficiencyEvaluation_CalibratedVsRaw_ShouldShowImprovedAccuracy()
+    {
+        var channels = Enumerable.Range(0, 4).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 2,
+            ColumnIndex = i % 2,
+            TxPower = 43.0
+        }).ToList();
+
+        var recentMetrics = new List<ChannelMetric>();
+
+        for (int i = 0; i < 4; i++)
+        {
+            double drift = i == 1 ? 15.0 : 0;
+
+            for (int j = 0; j < 10; j++)
+            {
+                recentMetrics.Add(new ChannelMetric
+                {
+                    ChannelIndex = i,
+                    ChannelId = channels[i].Id.ToString(),
+                    TxPower = 43.0,
+                    PaTemperature = 45.0 + drift + (j - 5) * 0.3,
+                    Timestamp = DateTime.UtcNow.AddMinutes(-j)
+                });
+            }
+        }
+
+        var request = new PaEfficiencyRequest
+        {
+            StationId = _testStationId,
+            Channels = channels,
+            RecentMetrics = recentMetrics
+        };
+
+        _mockEfficiencyRepo
+            .Setup(r => r.GetByChannelIdAndTimeRangeAsync(
+                It.IsAny<Guid>(), It.IsAny<DateTime>(), It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<PaEfficiencyRecord>().AsReadOnly());
+
+        var results = await _evaluator.RunEfficiencyEvaluationAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(4);
+
+        var driftedChannel = results.First(r => r.ChannelIndex == 1);
+        var normalChannel = results.First(r => r.ChannelIndex == 0);
+
+        driftedChannel.TemperatureDriftDetected.Should().BeTrue();
+        normalChannel.TemperatureDriftDetected.Should().BeFalse();
+
+        var rawDriftedEfficiency = driftedChannel.EfficiencyPercent;
+        var expectedDriftedEfficiencyWithCalibration = driftedChannel.EfficiencyPercent;
+
+        expectedDriftedEfficiencyWithCalibration.Should().BeGreaterThan(30);
+        expectedDriftedEfficiencyWithCalibration.Should().BeLessThan(50);
+
+        driftedChannel.PaTemperature.Should().BeLessThan(driftedChannel.RawPaTemperature);
+    }
+
+    #endregion
 }

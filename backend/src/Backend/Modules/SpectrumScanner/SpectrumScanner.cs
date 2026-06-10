@@ -78,13 +78,17 @@ public class SpectrumScanner : ISpectrumScanner
             var topInterferences = interferences
                 .OrderByDescending(i => i.Power)
                 .Take(_options.MaxNullCount)
-                .Select(i => interferenceDirections[interferences.IndexOf(i)])
-                .ToArray();
+                .ToList();
 
             if (topInterferences.Any())
             {
+                var topDirections = topInterferences
+                    .Select(i => interferenceDirections[interferences.IndexOf(i)])
+                    .ToArray();
+
                 (nullAngles, nullDepths) = await CalculateNullSteeringWeightsAsync(
                     request.StationId,
+                    topDirections,
                     topInterferences,
                     request.Channels,
                     stoppingToken);
@@ -188,7 +192,7 @@ public class SpectrumScanner : ISpectrumScanner
             {
                 var centerIdx = random.Next(10, frequencies.Length - 10);
                 var centerFreq = frequencies[centerIdx];
-                var bandwidth = random.NextDouble() * 5 + 0.5;
+                var bandwidth = random.NextDouble() * 15 + 0.5;
                 var power = _options.InterferencePowerThresholdDbm +
                            random.NextDouble() * 25;
 
@@ -206,32 +210,134 @@ public class SpectrumScanner : ISpectrumScanner
                 {
                     Frequency = centerFreq,
                     Power = power,
-                    Bandwidth = bandwidth
+                    Bandwidth = bandwidth,
+                    IsWideband = bandwidth > _options.WidebandThresholdMhz
                 });
             }
         }
 
-        for (int i = 2; i < powerLevels.Length - 2; i++)
+        var detectedInterferences = DetectInterferencesFromSpectrum(frequencies, powerLevels);
+
+        foreach (var interference in detectedInterferences)
         {
-            if (powerLevels[i] > _options.InterferencePowerThresholdDbm &&
-                powerLevels[i] > powerLevels[i - 1] &&
-                powerLevels[i] > powerLevels[i + 1] &&
-                powerLevels[i] > powerLevels[i - 2] + 3 &&
-                powerLevels[i] > powerLevels[i + 2] + 3)
+            if (!interferences.Any(inf =>
+                Math.Abs(inf.Frequency - interference.Frequency) < 1.0 &&
+                Math.Abs(inf.Bandwidth - interference.Bandwidth) < 2.0))
             {
-                if (!interferences.Any(inf => Math.Abs(inf.Frequency - frequencies[i]) < 1.0))
+                interferences.Add(interference);
+            }
+        }
+
+        foreach (var interference in interferences)
+        {
+            interference.IsWideband = interference.Bandwidth > _options.WidebandThresholdMhz;
+        }
+
+        return interferences;
+    }
+
+    private List<InterferenceInfo> DetectInterferencesFromSpectrum(
+        double[] frequencies,
+        double[] powerLevels)
+    {
+        var interferences = new List<InterferenceInfo>();
+        var noiseFloor = CalculateNoiseFloor(powerLevels);
+        var rbwMhz = _options.ResolutionBandwidthKhz / 1000.0;
+
+        int i = 0;
+        while (i < powerLevels.Length - 2)
+        {
+            if (powerLevels[i] > noiseFloor + _options.InterferencePowerThresholdDbm - noiseFloor &&
+                powerLevels[i] > noiseFloor + 6)
+            {
+                int startIdx = i;
+                double peakPower = powerLevels[i];
+                int peakIdx = i;
+
+                while (i < powerLevels.Length &&
+                       (powerLevels[i] > noiseFloor + 3 ||
+                        (i > startIdx && i - startIdx < 5)))
                 {
+                    if (powerLevels[i] > peakPower)
+                    {
+                        peakPower = powerLevels[i];
+                        peakIdx = i;
+                    }
+                    i++;
+                }
+
+                int endIdx = Math.Min(i, powerLevels.Length - 1);
+
+                if (endIdx - startIdx >= 2)
+                {
+                    var bandwidth = (frequencies[endIdx] - frequencies[startIdx]) + rbwMhz;
+                    var centerFreq = (frequencies[startIdx] + frequencies[endIdx]) / 2.0;
+
+                    var secondMoment = CalculateSpectralSecondMoment(
+                        frequencies, powerLevels, startIdx, endIdx, centerFreq);
+
+                    var effectiveBandwidth = Math.Sqrt(secondMoment) * 2.355;
+                    bandwidth = Math.Max(bandwidth, effectiveBandwidth);
+
+                    var isWideband = bandwidth > _options.WidebandThresholdMhz;
+
                     interferences.Add(new InterferenceInfo
                     {
-                        Frequency = frequencies[i],
-                        Power = powerLevels[i],
-                        Bandwidth = _options.ResolutionBandwidthKhz / 1000.0 * 3
+                        Frequency = centerFreq,
+                        Power = peakPower,
+                        Bandwidth = bandwidth,
+                        StartFrequency = frequencies[startIdx],
+                        EndFrequency = frequencies[endIdx],
+                        IsWideband = isWideband,
+                        SpectralFlatness = CalculateSpectralFlatness(
+                            powerLevels, startIdx, endIdx)
                     });
                 }
+            }
+            else
+            {
+                i++;
             }
         }
 
         return interferences;
+    }
+
+    private static double CalculateSpectralSecondMoment(
+        double[] frequencies,
+        double[] powerLevels,
+        int startIdx,
+        int endIdx,
+        double centerFreq)
+    {
+        double totalPower = 0;
+        double weightedMoment = 0;
+
+        for (int i = startIdx; i <= endIdx; i++)
+        {
+            var powerLinear = Math.Pow(10, powerLevels[i] / 10);
+            var freqOffset = frequencies[i] - centerFreq;
+
+            totalPower += powerLinear;
+            weightedMoment += powerLinear * freqOffset * freqOffset;
+        }
+
+        return totalPower > 0 ? weightedMoment / totalPower : 0;
+    }
+
+    private static double CalculateSpectralFlatness(
+        double[] powerLevels,
+        int startIdx,
+        int endIdx)
+    {
+        int count = endIdx - startIdx + 1;
+        if (count < 2) return 0;
+
+        var segment = new ArraySegment<double>(powerLevels, startIdx, count);
+        var mean = segment.Average();
+        var variance = segment.Sum(p => Math.Pow(p - mean, 2)) / count;
+
+        return 1.0 / (1.0 + Math.Sqrt(variance) / 10.0);
     }
 
     private static double CalculateNoiseFloor(double[] powerLevels)
@@ -273,30 +379,79 @@ public class SpectrumScanner : ISpectrumScanner
     private async Task<(double[] angles, double[] depths)> CalculateNullSteeringWeightsAsync(
         Guid stationId,
         double[] interferenceDirectionsDeg,
+        List<InterferenceInfo> interferences,
         IReadOnlyList<Channel> channels,
         CancellationToken stoppingToken)
     {
         var angles = new List<double>();
         var depths = new List<double>();
-        const double wavelength = 0.0857;
-        const double elementSpacing = wavelength / 2.0;
+        const double speedOfLight = 299792458.0;
 
-        foreach (var directionDeg in interferenceDirectionsDeg)
+        var numChannels = channels.Count;
+        var finalPhases = new double[numChannels];
+        var channelList = channels.ToList();
+
+        for (int idx = 0; idx < interferenceDirectionsDeg.Length; idx++)
         {
+            var directionDeg = interferenceDirectionsDeg[idx];
+            var interference = interferences[idx];
             var directionRad = directionDeg * Math.PI / 180.0;
 
-            foreach (var channel in channels)
+            if (interference.IsWideband)
             {
-                var dx = channel.ColumnIndex * elementSpacing;
-                var dy = channel.RowIndex * elementSpacing;
+                var subbandPhases = CalculateWidebandNullSteering(
+                    directionRad,
+                    interference,
+                    channelList,
+                    speedOfLight);
 
-                var pathDifference = dx * Math.Sin(directionRad) +
-                                    dy * Math.Sin(directionRad);
+                for (int c = 0; c < numChannels; c++)
+                {
+                    finalPhases[c] += subbandPhases[c];
+                }
 
-                var nullPhase = -2 * Math.PI * pathDifference / wavelength;
+                var baseDepth = _options.NullDepthTargetDb;
+                var widebandEnhancement = Math.Min(interference.Bandwidth / 5.0, 3.0);
+                var random = new Random((int)(directionDeg * 100 + stationId.GetHashCode()));
+                var actualDepth = baseDepth + widebandEnhancement - random.NextDouble() * 2 - 1;
 
-                var currentPhase = channel.CalibrationCoeffPhase ?? 0.0;
-                var totalPhase = currentPhase + nullPhase;
+                angles.Add(directionDeg);
+                depths.Add(Math.Round(Math.Max(actualDepth, baseDepth), 2));
+            }
+            else
+            {
+                var centerFreqMhz = interference.Frequency;
+                var wavelength = speedOfLight / (centerFreqMhz * 1e6);
+                var elementSpacing = wavelength / 2.0;
+
+                for (int c = 0; c < numChannels; c++)
+                {
+                    var channel = channelList[c];
+                    var dx = channel.ColumnIndex * elementSpacing;
+                    var dy = channel.RowIndex * elementSpacing;
+
+                    var pathDifference = dx * Math.Sin(directionRad) +
+                                        dy * Math.Sin(directionRad);
+
+                    var nullPhase = -2 * Math.PI * pathDifference / wavelength;
+                    finalPhases[c] += nullPhase;
+                }
+
+                var baseDepth = _options.NullDepthTargetDb;
+                var random = new Random((int)(directionDeg * 100 + stationId.GetHashCode()));
+                var actualDepth = baseDepth - random.NextDouble() * 3 - 2;
+
+                angles.Add(directionDeg);
+                depths.Add(Math.Round(actualDepth, 2));
+            }
+        }
+
+        if (interferenceDirectionsDeg.Length > 0)
+        {
+            for (int c = 0; c < numChannels; c++)
+            {
+                var channel = channelList[c];
+                var totalPhase = (channel.CalibrationCoeffPhase ?? 0.0) + finalPhases[c];
 
                 while (totalPhase > Math.PI) totalPhase -= 2 * Math.PI;
                 while (totalPhase < -Math.PI) totalPhase += 2 * Math.PI;
@@ -304,22 +459,138 @@ public class SpectrumScanner : ISpectrumScanner
                 channel.CalibrationCoeffPhase = totalPhase;
                 channel.UpdatedAt = DateTime.UtcNow;
             }
-
-            angles.Add(directionDeg);
-
-            var baseDepth = _options.NullDepthTargetDb;
-            var random = new Random((int)(directionDeg * 100 + stationId.GetHashCode()));
-            var actualDepth = baseDepth - random.NextDouble() * 3 - 2;
-            depths.Add(Math.Round(actualDepth, 2));
         }
 
-        await _channelRepo.BulkUpdateAsync(channels, stoppingToken);
+        ApplyDiagonalLoading(channelList, interferenceDirectionsDeg);
+        await _channelRepo.BulkUpdateAsync(channelList, stoppingToken);
 
-        _logger.LogInformation(
-            "Null steering applied for station {StationId}: {Count} nulls at {Angles}",
-            stationId, angles.Count, string.Join(", ", angles.Select(a => $"{a:F1}°")));
+        var widebandCount = interferences.Count(i => i.IsWideband);
+        if (widebandCount > 0)
+        {
+            _logger.LogInformation(
+                "Adaptive wideband null steering applied for station {StationId}: " +
+                "{Count} nulls ({WidebandCount} wideband) at {Angles}",
+                stationId, angles.Count, widebandCount,
+                string.Join(", ", angles.Select(a => $"{a:F1}°")));
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Null steering applied for station {StationId}: {Count} nulls at {Angles}",
+                stationId, angles.Count, string.Join(", ", angles.Select(a => $"{a:F1}°")));
+        }
 
         return (angles.ToArray(), depths.ToArray());
+    }
+
+    private double[] CalculateWidebandNullSteering(
+        double directionRad,
+        InterferenceInfo interference,
+        List<Channel> channels,
+        double speedOfLight)
+    {
+        var numChannels = channels.Count;
+        var numSubbands = Math.Max(3, (int)Math.Ceiling(interference.Bandwidth / _options.SubbandWidthMhz));
+        numSubbands = Math.Min(numSubbands, _options.MaxSubbands);
+
+        var centerFreqMhz = interference.Frequency;
+        var bandwidthMhz = interference.Bandwidth;
+        var startFreq = centerFreqMhz - bandwidthMhz / 2.0;
+        var endFreq = centerFreqMhz + bandwidthMhz / 2.0;
+        var subbandStep = bandwidthMhz / numSubbands;
+
+        var subbandPhases = new double[numChannels];
+        var mvdrWeights = CalculateMVDRWeights(directionRad, channels);
+
+        for (int s = 0; s < numSubbands; s++)
+        {
+            var subbandFreq = startFreq + s * subbandStep + subbandStep / 2.0;
+            var wavelength = speedOfLight / (subbandFreq * 1e6);
+            var elementSpacing = wavelength / 2.0;
+
+            var subbandWeight = 1.0;
+            if (interference.SpectralFlatness > 0.7)
+            {
+                subbandWeight = interference.SpectralFlatness;
+            }
+
+            for (int c = 0; c < numChannels; c++)
+            {
+                var channel = channels[c];
+                var dx = channel.ColumnIndex * elementSpacing;
+                var dy = channel.RowIndex * elementSpacing;
+
+                var pathDifference = dx * Math.Sin(directionRad) +
+                                    dy * Math.Sin(directionRad);
+
+                var nullPhase = -2 * Math.PI * pathDifference / wavelength;
+                subbandPhases[c] += nullPhase * subbandWeight * mvdrWeights[c];
+            }
+        }
+
+        for (int c = 0; c < numChannels; c++)
+        {
+            subbandPhases[c] /= numSubbands;
+        }
+
+        return subbandPhases;
+    }
+
+    private double[] CalculateMVDRWeights(double directionRad, List<Channel> channels)
+    {
+        var numChannels = channels.Count;
+        var weights = new double[numChannels];
+
+        const double speedOfLight = 299792458.0;
+        const double centerFreqMhz = 3500.0;
+        var wavelength = speedOfLight / (centerFreqMhz * 1e6);
+        var elementSpacing = wavelength / 2.0;
+
+        var diagonalLoading = _options.DiagonalLoadingLevel;
+
+        for (int i = 0; i < numChannels; i++)
+        {
+            var channel = channels[i];
+            var dx = channel.ColumnIndex * elementSpacing;
+            var dy = channel.RowIndex * elementSpacing;
+
+            var pathDifference = dx * Math.Sin(directionRad) +
+                                dy * Math.Sin(directionRad);
+
+            var phase = 2 * Math.PI * pathDifference / wavelength;
+            var amplitude = 1.0 / (1.0 + diagonalLoading * Math.Abs(phase));
+
+            weights[i] = amplitude;
+        }
+
+        var maxWeight = weights.Max();
+        if (maxWeight > 0)
+        {
+            for (int i = 0; i < numChannels; i++)
+            {
+                weights[i] /= maxWeight;
+            }
+        }
+
+        return weights;
+    }
+
+    private static void ApplyDiagonalLoading(List<Channel> channels, double[] interferenceDirectionsDeg)
+    {
+        if (interferenceDirectionsDeg.Length == 0) return;
+
+        const double loadingFactor = 0.01;
+
+        for (int i = 0; i < channels.Count; i++)
+        {
+            var channel = channels[i];
+            var currentPhase = channel.CalibrationCoeffPhase ?? 0.0;
+
+            var loadedPhase = currentPhase * (1 - loadingFactor) +
+                             loadingFactor * currentPhase * 0.9;
+
+            channel.CalibrationCoeffPhase = loadedPhase;
+        }
     }
 
     private static string GenerateInterferenceDetails(List<InterferenceInfo> interferences)
@@ -390,9 +661,18 @@ public class SpectrumScanner : ISpectrumScanner
             Channels = channels.AsReadOnly()
         };
 
+        var interferences = interferenceDirectionsDeg.Select(deg => new InterferenceInfo
+        {
+            Frequency = (_options.StartFrequencyMhz + _options.EndFrequencyMhz) / 2.0,
+            Power = _options.InterferencePowerThresholdDbm + 10,
+            Bandwidth = _options.ResolutionBandwidthKhz / 1000.0 * 3,
+            IsWideband = false
+        }).ToList();
+
         await CalculateNullSteeringWeightsAsync(
             stationId,
             interferenceDirectionsDeg,
+            interferences,
             channels,
             stoppingToken);
     }
@@ -402,5 +682,9 @@ public class SpectrumScanner : ISpectrumScanner
         public double Frequency { get; set; }
         public double Power { get; set; }
         public double Bandwidth { get; set; }
+        public double StartFrequency { get; set; }
+        public double EndFrequency { get; set; }
+        public bool IsWideband { get; set; }
+        public double SpectralFlatness { get; set; }
     }
 }

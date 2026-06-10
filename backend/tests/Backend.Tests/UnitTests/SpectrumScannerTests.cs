@@ -897,4 +897,308 @@ public class SpectrumScannerTests : TestBase
     }
 
     #endregion
+
+    #region 根因验证测试 - 宽带干扰时零陷效果差修复
+
+    [Fact]
+    public async Task RunSpectrumScan_WithWidebandInterference_ShouldUseAdaptiveNullSteering()
+    {
+        var channels = Enumerable.Range(0, 16).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 4,
+            ColumnIndex = i % 4,
+            CalibrationCoeffPhase = 0.0,
+            TxPower = 43.0
+        }).ToList();
+
+        var request = new SpectrumScanRequest
+        {
+            StationId = _testStationId,
+            StartFrequencyMhz = 3400,
+            EndFrequencyMhz = 3600,
+            ResolutionBandwidthKhz = 100,
+            Channels = channels
+        };
+
+        var freqPoints = GenerateFrequencyPoints(3400, 3600, 100);
+        var powerLevels = new double[freqPoints.Length];
+        for (int i = 0; i < powerLevels.Length; i++)
+        {
+            powerLevels[i] = -100;
+        }
+
+        var widebandStartIdx = freqPoints.ToList().FindIndex(f => f >= 3480);
+        var widebandEndIdx = freqPoints.ToList().FindIndex(f => f >= 3520);
+        if (widebandEndIdx == -1) widebandEndIdx = freqPoints.Length - 1;
+
+        for (int i = widebandStartIdx; i <= widebandEndIdx; i++)
+        {
+            powerLevels[i] = -60;
+        }
+
+        _mockSpectrumProvider
+            .Setup(p => p.GetSpectrumDataAsync(
+                request.StationId, request.StartFrequencyMhz, request.EndFrequencyMhz,
+                request.ResolutionBandwidthKhz, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((freqPoints, powerLevels));
+
+        _mockChannelRepo
+            .Setup(r => r.BulkUpdateAsync(
+                It.IsAny<IEnumerable<Channel>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var result = await _scanner.RunSpectrumScanAsync(request, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result.InterferenceCount.Should().BeGreaterThan(0);
+
+        var widebandInterference = result.InterferenceDetails?.Contains("3480") ?? false;
+        widebandInterference.Should().BeTrue();
+
+        VerifyLog(_mockLogger, LogLevel.Information, "wideband", Times.AtLeastOnce());
+    }
+
+    [Fact]
+    public async Task RunSpectrumScan_WithNarrowbandInterference_ShouldUseStandardNullSteering()
+    {
+        var channels = Enumerable.Range(0, 16).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 4,
+            ColumnIndex = i % 4,
+            CalibrationCoeffPhase = 0.0,
+            TxPower = 43.0
+        }).ToList();
+
+        var request = new SpectrumScanRequest
+        {
+            StationId = _testStationId,
+            StartFrequencyMhz = 3400,
+            EndFrequencyMhz = 3600,
+            ResolutionBandwidthKhz = 100,
+            Channels = channels
+        };
+
+        var freqPoints = GenerateFrequencyPoints(3400, 3600, 100);
+        var powerLevels = new double[freqPoints.Length];
+        for (int i = 0; i < powerLevels.Length; i++)
+        {
+            powerLevels[i] = -100;
+        }
+
+        var nbIdx = freqPoints.ToList().FindIndex(f => f >= 3500);
+        if (nbIdx > 0)
+        {
+            powerLevels[nbIdx] = -55;
+            if (nbIdx > 1) powerLevels[nbIdx - 1] = -65;
+            if (nbIdx < powerLevels.Length - 1) powerLevels[nbIdx + 1] = -65;
+        }
+
+        _mockSpectrumProvider
+            .Setup(p => p.GetSpectrumDataAsync(
+                request.StationId, request.StartFrequencyMhz, request.EndFrequencyMhz,
+                request.ResolutionBandwidthKhz, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((freqPoints, powerLevels));
+
+        _mockChannelRepo
+            .Setup(r => r.BulkUpdateAsync(
+                It.IsAny<IEnumerable<Channel>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var result = await _scanner.RunSpectrumScanAsync(request, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result.InterferenceCount.Should().BeGreaterThan(0);
+
+        VerifyLog(_mockLogger, LogLevel.Information, "Null steering", Times.AtLeastOnce());
+    }
+
+    [Fact]
+    public async Task RunSpectrumScan_MultipleInterferenceTypes_ShouldApplyCorrectAlgorithm()
+    {
+        var channels = Enumerable.Range(0, 16).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 4,
+            ColumnIndex = i % 4,
+            CalibrationCoeffPhase = 0.0,
+            TxPower = 43.0
+        }).ToList();
+
+        var request = new SpectrumScanRequest
+        {
+            StationId = _testStationId,
+            StartFrequencyMhz = 3400,
+            EndFrequencyMhz = 3600,
+            ResolutionBandwidthKhz = 100,
+            Channels = channels
+        };
+
+        var freqPoints = GenerateFrequencyPoints(3400, 3600, 100);
+        var powerLevels = new double[freqPoints.Length];
+        for (int i = 0; i < powerLevels.Length; i++)
+        {
+            powerLevels[i] = -100;
+        }
+
+        var wbStartIdx = freqPoints.ToList().FindIndex(f => f >= 3420);
+        var wbEndIdx = freqPoints.ToList().FindIndex(f => f >= 3450);
+        if (wbEndIdx == -1) wbEndIdx = freqPoints.Length - 1;
+
+        for (int i = wbStartIdx; i <= wbEndIdx; i++)
+        {
+            powerLevels[i] = -65;
+        }
+
+        var nbIdx = freqPoints.ToList().FindIndex(f => f >= 3550);
+        if (nbIdx > 0)
+        {
+            powerLevels[nbIdx] = -55;
+        }
+
+        _mockSpectrumProvider
+            .Setup(p => p.GetSpectrumDataAsync(
+                request.StationId, request.StartFrequencyMhz, request.EndFrequencyMhz,
+                request.ResolutionBandwidthKhz, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((freqPoints, powerLevels));
+
+        _mockChannelRepo
+            .Setup(r => r.BulkUpdateAsync(
+                It.IsAny<IEnumerable<Channel>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var result = await _scanner.RunSpectrumScanAsync(request, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result.InterferenceCount.Should().BeGreaterOrEqualTo(2);
+
+        foreach (var depth in result.NullDepthsDb)
+        {
+            depth.Should().BeGreaterThanOrEqualTo(20);
+            depth.Should().BeLessThanOrEqualTo(40);
+        }
+
+        result.FrequencyPointsMhz.Should().HaveSameCount(result.PowerLevelsDbm);
+
+        VerifyLog(_mockLogger, LogLevel.Information, "wideband", Times.AtLeastOnce());
+    }
+
+    [Fact]
+    public async Task RunSpectrumScan_WidebandInterference_NullDepthsShouldMeetTarget()
+    {
+        var channels = Enumerable.Range(0, 16).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 4,
+            ColumnIndex = i % 4,
+            CalibrationCoeffPhase = 0.0,
+            TxPower = 43.0
+        }).ToList();
+
+        var request = new SpectrumScanRequest
+        {
+            StationId = _testStationId,
+            StartFrequencyMhz = 3400,
+            EndFrequencyMhz = 3600,
+            ResolutionBandwidthKhz = 100,
+            Channels = channels
+        };
+
+        var freqPoints = GenerateFrequencyPoints(3400, 3600, 100);
+        var powerLevels = new double[freqPoints.Length];
+        for (int i = 0; i < powerLevels.Length; i++)
+        {
+            powerLevels[i] = -100;
+        }
+
+        var wbStartIdx = freqPoints.ToList().FindIndex(f => f >= 3470);
+        var wbEndIdx = freqPoints.ToList().FindIndex(f => f >= 3530);
+        if (wbEndIdx == -1) wbEndIdx = freqPoints.Length - 1;
+
+        for (int i = wbStartIdx; i <= wbEndIdx; i++)
+        {
+            var centerFreq = 3500;
+            var currentFreq = freqPoints[i];
+            var rolloff = 1.0 - Math.Pow(Math.Abs(currentFreq - centerFreq) / 30.0, 2);
+            powerLevels[i] = -60 + rolloff * 10;
+        }
+
+        _mockSpectrumProvider
+            .Setup(p => p.GetSpectrumDataAsync(
+                request.StationId, request.StartFrequencyMhz, request.EndFrequencyMhz,
+                request.ResolutionBandwidthKhz, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((freqPoints, powerLevels));
+
+        _mockChannelRepo
+            .Setup(r => r.BulkUpdateAsync(
+                It.IsAny<IEnumerable<Channel>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var result = await _scanner.RunSpectrumScanAsync(request, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result.NullDepthsDb.Should().NotBeEmpty();
+
+        var avgNullDepth = result.NullDepthsDb.Average();
+        avgNullDepth.Should().BeGreaterThanOrEqualTo(22);
+
+        foreach (var depth in result.NullDepthsDb)
+        {
+            double.IsNaN(depth).Should().BeFalse();
+            double.IsInfinity(depth).Should().BeFalse();
+        }
+
+        VerifyLog(_mockLogger, LogLevel.Information, "Adaptive wideband", Times.AtLeastOnce());
+    }
+
+    [Fact]
+    public async Task ApplyNullSteering_ManualCall_ShouldWorkWithoutInterferenceInfo()
+    {
+        var channels = Enumerable.Range(0, 16).Select(i => new Channel
+        {
+            Id = Guid.NewGuid(),
+            ChannelIndex = i,
+            RowIndex = i / 4,
+            ColumnIndex = i % 4,
+            CalibrationCoeffPhase = 0.0,
+            TxPower = 43.0
+        }).ToList();
+
+        var interferenceDirections = new[] { 30.0, -45.0 };
+
+        _mockChannelRepo
+            .Setup(r => r.GetByStationIdAsync(
+                _testStationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(channels.AsReadOnly());
+
+        _mockChannelRepo
+            .Setup(r => r.BulkUpdateAsync(
+                It.IsAny<IEnumerable<Channel>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var ex = await Record.ExceptionAsync(() =>
+            _scanner.ApplyNullSteeringAsync(_testStationId, interferenceDirections, CancellationToken.None));
+
+        ex.Should().BeNull();
+
+        _mockChannelRepo.Verify(r => r.BulkUpdateAsync(
+            It.Is<IEnumerable<Channel>>(c => c.All(ch => ch.UpdatedAt != default)),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static double[] GenerateFrequencyPoints(double startMhz, double endMhz, double rbwKhz)
+    {
+        var rbwMhz = rbwKhz / 1000.0;
+        var count = (int)Math.Ceiling((endMhz - startMhz) / rbwMhz) + 1;
+        return Enumerable.Range(0, count)
+            .Select(i => startMhz + i * rbwMhz)
+            .ToArray();
+    }
+
+    #endregion
 }

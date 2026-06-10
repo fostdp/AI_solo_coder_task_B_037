@@ -2,16 +2,18 @@ namespace AntennaMonitoring.Messages;
 
 public record SensorData
 {
-    public Guid StationId { get; set; }
-    public int SensorIndex { get; set; }
-    public string SensorType { get; set; } = string.Empty;
-    public double TiltAngleX { get; set; }
-    public double TiltAngleY { get; set; }
-    public double TiltAngleZ { get; set; }
-    public double StrainValue { get; set; }
-    public double Temperature { get; set; }
-    public double WindSpeed { get; set; }
-    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public Guid StationId { get; init; }
+    public int SensorIndex { get; init; }
+    public string SensorType { get; init; } = string.Empty;
+    public double TiltAngleX { get; init; }
+    public double TiltAngleY { get; init; }
+    public double TiltAngleZ { get; init; }
+    public double StrainValue { get; init; }
+    public double Temperature { get; init; }
+    public double WindSpeed { get; init; }
+    public DateTime Timestamp { get; init; } = DateTime.UtcNow;
+    public bool IsAnomaly { get; init; }
+    public bool IsInterpolated { get; init; }
 }
 
 public record DeformationRequest
@@ -32,6 +34,12 @@ public record DeformationResult
     public double CorrectionAngleAzimuth { get; set; }
     public double CorrectionAngleElevation { get; set; }
     public bool CorrectionApplied { get; set; }
+    public double TiltAngleX { get; set; }
+    public double TiltAngleY { get; set; }
+    public double TiltAngleZ { get; set; }
+    public double StrainValue { get; set; }
+    public bool IsInterpolated { get; set; }
+    public bool IsAnomaly { get; set; }
 }
 
 public record CoSiteAntenna
@@ -46,6 +54,7 @@ public record CoSiteAntenna
     public double AzimuthAngleDeg { get; set; }
     public double ElevationAngleDeg { get; set; }
     public double HeightOffsetMeters { get; set; }
+    public bool IsApproximated { get; set; }
 }
 
 public record CoSiteInterferenceRequest
@@ -69,6 +78,7 @@ public record CoSiteInterferenceResult
     public double VectorX { get; set; }
     public double VectorY { get; set; }
     public double VectorZ { get; set; }
+    public bool IsApproximated { get; set; }
 }
 
 public record ChannelMetric
@@ -96,6 +106,9 @@ public record PaEfficiencyResult
     public Guid ChannelId { get; set; }
     public int ChannelIndex { get; set; }
     public double PaTemperature { get; set; }
+    public double RawPaTemperature { get; set; }
+    public bool TemperatureDriftDetected { get; set; }
+    public double TemperatureDriftAmount { get; set; }
     public double OutputPowerDbm { get; set; }
     public double InputPowerDbm { get; set; }
     public double GainDb { get; set; }

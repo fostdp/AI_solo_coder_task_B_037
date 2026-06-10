@@ -78,6 +78,7 @@ public class CoSiteInterferenceOptions
     public int IntervalMinutes { get; set; } = 10;
     public double FrequencyOverlapThreshold { get; set; } = 0.1;
     public double CouplingModelAccuracy { get; set; } = 0.85;
+    public double FastCalculationDistanceThresholdMeters { get; set; } = 100.0;
 }
 
 public class PaEfficiencyOptions
@@ -90,6 +91,8 @@ public class PaEfficiencyOptions
     public int IntervalMinutes { get; set; } = 5;
     public double DecayRateAlarmThreshold { get; set; } = 0.001;
     public double MinimumRemainingHours { get; set; } = 720;
+    public double TemperatureDriftThreshold { get; set; } = 5.0;
+    public double KalmanFilterAlpha { get; set; } = 0.3;
 }
 
 public class SpectrumScanOptions
@@ -103,4 +106,8 @@ public class SpectrumScanOptions
     public int IntervalMinutes { get; set; } = 15;
     public bool AutoNullSteering { get; set; } = true;
     public double DoaEstimationAccuracy { get; set; } = 0.9;
+    public double WidebandThresholdMhz { get; set; } = 5.0;
+    public double SubbandWidthMhz { get; set; } = 2.0;
+    public int MaxSubbands { get; set; } = 8;
+    public double DiagonalLoadingLevel { get; set; } = 0.1;
 }

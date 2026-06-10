@@ -943,4 +943,208 @@ public class CoSiteInterferenceAnalyzerTests : TestBase
     }
 
     #endregion
+
+    #region 根因验证测试 - 多天线耦合时计算量大修复
+
+    [Fact]
+    public async Task RunInterferenceAnalysis_ManyAntennas_ShouldApplyClustering()
+    {
+        var antennas = Enumerable.Range(0, 60).Select(i => new CoSiteAntenna
+        {
+            Id = Guid.NewGuid(),
+            OperatorName = $"Op{i}",
+            AntennaType = "Test",
+            FrequencyStartMhz = 3400 + (i % 10) * 5,
+            FrequencyEndMhz = 3450 + (i % 10) * 5,
+            TransmitPowerDbm = 40 + i % 10,
+            SeparationDistanceMeters = 5.0 + (i % 6) * 0.5,
+            AzimuthAngleDeg = (i % 6) * 5,
+            ElevationAngleDeg = i % 30,
+            HeightOffsetMeters = i % 5
+        }).ToList();
+
+        var request = new CoSiteInterferenceRequest
+        {
+            StationId = _testStationId,
+            CoSiteAntennas = antennas,
+            SelfFrequencyStartMhz = 3400,
+            SelfFrequencyEndMhz = 3600
+        };
+
+        var startTime = DateTime.UtcNow;
+        var results = await _analyzer.RunInterferenceAnalysisAsync(request, CancellationToken.None);
+        var elapsed = DateTime.UtcNow - startTime;
+
+        results.Should().NotBeNull();
+        results.Count.Should().BeLessThan(60);
+        results.Count.Should().BeGreaterThan(0);
+
+        var approximatedCount = results.Count(r => r.IsApproximated);
+        approximatedCount.Should().BeGreaterThan(0);
+
+        elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
+
+        VerifyLog(_mockLogger, LogLevel.Information, "Optimized", Times.AtLeastOnce());
+    }
+
+    [Fact]
+    public async Task RunInterferenceAnalysis_LongDistanceAntenna_ShouldUseApproximateCalculation()
+    {
+        var antennas = new List<CoSiteAntenna>
+        {
+            new()
+            {
+                Id = Guid.NewGuid(),
+                OperatorName = "Near",
+                AntennaType = "Test",
+                FrequencyStartMhz = 3400,
+                FrequencyEndMhz = 3500,
+                TransmitPowerDbm = 43,
+                SeparationDistanceMeters = 10,
+                AzimuthAngleDeg = 0,
+                ElevationAngleDeg = 0,
+                HeightOffsetMeters = 0
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                OperatorName = "Far",
+                AntennaType = "Test",
+                FrequencyStartMhz = 3400,
+                FrequencyEndMhz = 3500,
+                TransmitPowerDbm = 43,
+                SeparationDistanceMeters = 200,
+                AzimuthAngleDeg = 180,
+                ElevationAngleDeg = 0,
+                HeightOffsetMeters = 0
+            }
+        };
+
+        var request = new CoSiteInterferenceRequest
+        {
+            StationId = _testStationId,
+            CoSiteAntennas = antennas,
+            SelfFrequencyStartMhz = 3400,
+            SelfFrequencyEndMhz = 3600
+        };
+
+        var results = await _analyzer.RunInterferenceAnalysisAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Should().HaveCount(2);
+
+        var nearResult = results.First(r => r.InterferingOperator == "Near");
+        var farResult = results.First(r => r.InterferingOperator == "Far");
+
+        nearResult.IsolationDb.Should().BeGreaterThan(0);
+        farResult.IsolationDb.Should().BeGreaterThan(nearResult.IsolationDb);
+
+        nearResult.IsolationDb.Should().BeApproximately(30, 10);
+        farResult.IsolationDb.Should().BeApproximately(70, 20);
+
+        VerifyLog(_mockLogger, LogLevel.Debug, "approximate", Times.AtLeastOnce());
+    }
+
+    [Fact]
+    public async Task RunInterferenceAnalysis_ClusteredAntennas_ShouldCreateRepresentatives()
+    {
+        var clusterCenter = Guid.NewGuid();
+        var antennas = new List<CoSiteAntenna>();
+
+        for (int i = 0; i < 8; i++)
+        {
+            antennas.Add(new CoSiteAntenna
+            {
+                Id = Guid.NewGuid(),
+                OperatorName = $"Cluster1_Ant{i}",
+                AntennaType = "Test",
+                FrequencyStartMhz = 3400 + i,
+                FrequencyEndMhz = 3500 + i,
+                TransmitPowerDbm = 40 + i % 5,
+                SeparationDistanceMeters = 5.0 + i * 0.1,
+                AzimuthAngleDeg = 10.0 + i * 0.5,
+                ElevationAngleDeg = 0,
+                HeightOffsetMeters = 0
+            });
+        }
+
+        for (int i = 0; i < 3; i++)
+        {
+            antennas.Add(new CoSiteAntenna
+            {
+                Id = Guid.NewGuid(),
+                OperatorName = $"Isolated_Ant{i}",
+                AntennaType = "Test",
+                FrequencyStartMhz = 3600 + i * 10,
+                FrequencyEndMhz = 3700 + i * 10,
+                TransmitPowerDbm = 40,
+                SeparationDistanceMeters = 50.0 + i * 5,
+                AzimuthAngleDeg = 90.0 + i * 10,
+                ElevationAngleDeg = 0,
+                HeightOffsetMeters = 0
+            });
+        }
+
+        var request = new CoSiteInterferenceRequest
+        {
+            StationId = _testStationId,
+            CoSiteAntennas = antennas,
+            SelfFrequencyStartMhz = 3400,
+            SelfFrequencyEndMhz = 3800
+        };
+
+        var results = await _analyzer.RunInterferenceAnalysisAsync(request, CancellationToken.None);
+
+        results.Should().NotBeNull();
+        results.Count.Should().BeLessThan(11);
+
+        var approxResults = results.Where(r => r.IsApproximated).ToList();
+        approxResults.Count.Should().BeGreaterThan(0);
+
+        foreach (var result in results)
+        {
+            double.IsNaN(result.IsolationDb).Should().BeFalse();
+            double.IsInfinity(result.IsolationDb).Should().BeFalse();
+            result.IsolationDb.Should().BeGreaterThanOrEqualTo(0);
+            result.IsolationDb.Should().BeLessThanOrEqualTo(100);
+        }
+    }
+
+    [Fact]
+    public async Task RunInterferenceAnalysis_PerformanceWithManyAntennas_ShouldBeOptimized()
+    {
+        var antennas = Enumerable.Range(0, 100).Select(i => new CoSiteAntenna
+        {
+            Id = Guid.NewGuid(),
+            OperatorName = $"Op{i}",
+            AntennaType = "Test",
+            FrequencyStartMhz = 3400 + (i % 20) * 10,
+            FrequencyEndMhz = 3500 + (i % 20) * 10,
+            TransmitPowerDbm = 40 + i % 10,
+            SeparationDistanceMeters = 1.0 + (i % 10) * 0.5,
+            AzimuthAngleDeg = (i % 10) * 5,
+            ElevationAngleDeg = i % 30,
+            HeightOffsetMeters = i % 5
+        }).ToList();
+
+        var request = new CoSiteInterferenceRequest
+        {
+            StationId = _testStationId,
+            CoSiteAntennas = antennas,
+            SelfFrequencyStartMhz = 3400,
+            SelfFrequencyEndMhz = 3800
+        };
+
+        var startTime = DateTime.UtcNow;
+        var results = await _analyzer.RunInterferenceAnalysisAsync(request, CancellationToken.None);
+        var elapsed = DateTime.UtcNow - startTime;
+
+        results.Should().NotBeNull();
+        results.Count.Should().BeGreaterThan(0);
+        results.Count.Should().BeLessThanOrEqualTo(50);
+
+        elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1.5));
+    }
+
+    #endregion
 }

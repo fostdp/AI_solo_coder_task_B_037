@@ -36,8 +36,9 @@ public class CoSiteInterferenceAnalyzer : ICoSiteInterferenceAnalyzer
         _logger.LogDebug("Running co-site interference analysis for station {StationId}", request.StationId);
 
         var results = new List<CoSiteInterferenceResult>();
+        var optimizedAntennas = OptimizeAntennaList(request.CoSiteAntennas);
 
-        foreach (var interferingAntenna in request.CoSiteAntennas)
+        foreach (var interferingAntenna in optimizedAntennas)
         {
             try
             {
@@ -71,6 +72,267 @@ public class CoSiteInterferenceAnalyzer : ICoSiteInterferenceAnalyzer
             DateTime.UtcNow), stoppingToken);
 
         return results.AsReadOnly();
+    }
+
+    private IReadOnlyList<CoSiteAntenna> OptimizeAntennaList(IReadOnlyList<CoSiteAntenna> antennas)
+    {
+        if (antennas.Count <= 10)
+        {
+            return antennas;
+        }
+
+        var antennaGroups = ClusterAntennasByDistance(antennas);
+        var optimizedList = new List<CoSiteAntenna>();
+        var processedGroups = new HashSet<int>();
+
+        foreach (var antenna in antennas)
+        {
+            var groupId = antennaGroups[antenna.Id];
+
+            if (!processedGroups.Contains(groupId))
+            {
+                var groupAntennas = antennaGroups
+                    .Where(kvp => kvp.Value == groupId)
+                    .Join(antennas, kvp => kvp.Key, a => a.Id, (kvp, a) => a)
+                    .ToList();
+
+                if (groupAntennas.Count == 1)
+                {
+                    optimizedList.Add(antenna);
+                }
+                else
+                {
+                    var representative = CreateRepresentativeAntenna(groupAntennas);
+                    optimizedList.Add(representative);
+                }
+
+                processedGroups.Add(groupId);
+            }
+        }
+
+        if (optimizedList.Count > antennas.Count / 2)
+        {
+            optimizedList = optimizedList
+                .OrderBy(a => a.SeparationDistanceMeters)
+                .Take(Math.Max(10, antennas.Count / 2))
+                .ToList();
+        }
+
+        _logger.LogInformation("Optimized antenna list from {OriginalCount} to {OptimizedCount} using clustering",
+            antennas.Count, optimizedList.Count);
+
+        return optimizedList.AsReadOnly();
+    }
+
+    private Dictionary<Guid, int> ClusterAntennasByDistance(IReadOnlyList<CoSiteAntenna> antennas)
+    {
+        var groups = new Dictionary<Guid, int>();
+        const double clusterThresholdMeters = 20.0;
+
+        for (int i = 0; i < antennas.Count; i++)
+        {
+            groups[antennas[i].Id] = i;
+        }
+
+        for (int i = 0; i < antennas.Count; i++)
+        {
+            for (int j = i + 1; j < antennas.Count; j++)
+            {
+                var distance = CalculateAntennaDistance(antennas[i], antennas[j]);
+
+                if (distance < clusterThresholdMeters)
+                {
+                    var groupI = groups[antennas[i].Id];
+                    var groupJ = groups[antennas[j].Id];
+
+                    if (groupI != groupJ)
+                    {
+                        foreach (var key in groups.Keys.ToList())
+                        {
+                            if (groups[key] == groupJ)
+                            {
+                                groups[key] = groupI;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        var groupIds = groups.Values.Distinct().ToList();
+        for (int i = 0; i < groupIds.Count; i++)
+        {
+            foreach (var key in groups.Keys.ToList())
+            {
+                if (groups[key] == groupIds[i])
+                {
+                    groups[key] = i;
+                }
+            }
+        }
+
+        return groups;
+    }
+
+    private static double CalculateAntennaDistance(CoSiteAntenna a, CoSiteAntenna b)
+    {
+        var dx = a.SeparationDistanceMeters * Math.Cos(a.AzimuthAngleDeg * Math.PI / 180) -
+                 b.SeparationDistanceMeters * Math.Cos(b.AzimuthAngleDeg * Math.PI / 180);
+        var dy = a.SeparationDistanceMeters * Math.Sin(a.AzimuthAngleDeg * Math.PI / 180) -
+                 b.SeparationDistanceMeters * Math.Sin(b.AzimuthAngleDeg * Math.PI / 180);
+        var dz = a.HeightOffsetMeters - b.HeightOffsetMeters;
+
+        return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    private static CoSiteAntenna CreateRepresentativeAntenna(List<CoSiteAntenna> group)
+    {
+        if (group.Count == 0) throw new ArgumentException("Group cannot be empty");
+
+        var nearest = group.OrderBy(a => a.SeparationDistanceMeters).First();
+
+        var avgDistance = group.Average(a => a.SeparationDistanceMeters);
+        var avgAzimuth = group.Average(a => a.AzimuthAngleDeg);
+        var avgElevation = group.Average(a => a.ElevationAngleDeg);
+        var avgHeight = group.Average(a => a.HeightOffsetMeters);
+        var maxPower = group.Max(a => a.TransmitPowerDbm);
+        var minFreqStart = group.Min(a => a.FrequencyStartMhz);
+        var maxFreqEnd = group.Max(a => a.FrequencyEndMhz);
+
+        return new CoSiteAntenna
+        {
+            Id = nearest.Id,
+            OperatorName = $"{group.Count} antennas",
+            AntennaType = "Cluster",
+            FrequencyStartMhz = minFreqStart,
+            FrequencyEndMhz = maxFreqEnd,
+            TransmitPowerDbm = maxPower,
+            SeparationDistanceMeters = avgDistance,
+            AzimuthAngleDeg = avgAzimuth,
+            ElevationAngleDeg = avgElevation,
+            HeightOffsetMeters = avgHeight,
+            IsApproximated = true
+        };
+    }
+
+    private double CalculateIsolation(
+        double distanceMeters,
+        double azimuthDeg,
+        double elevationDeg,
+        double heightOffsetMeters,
+        double interfererStartMhz,
+        double interfererEndMhz,
+        double selfStartMhz,
+        double selfEndMhz,
+        double interfererPowerDbm)
+    {
+        var frequencyMhz = (interfererStartMhz + interfererEndMhz) / 2.0;
+
+        if (distanceMeters > _options.FastCalculationDistanceThresholdMeters)
+        {
+            return CalculateIsolationApproximate(
+                distanceMeters,
+                azimuthDeg,
+                frequencyMhz,
+                interfererStartMhz,
+                interfererEndMhz,
+                selfStartMhz,
+                selfEndMhz,
+                interfererPowerDbm);
+        }
+
+        var wavelengthMeters = 299.792458 / frequencyMhz;
+
+        var freeSpacePathLoss = 20 * Math.Log10(4 * Math.PI * distanceMeters / wavelengthMeters);
+
+        var mutualCouplingLoss = CalculateMutualCouplingLoss(
+            distanceMeters,
+            azimuthDeg,
+            elevationDeg,
+            heightOffsetMeters,
+            frequencyMhz);
+
+        var polarizationLoss = CalculatePolarizationLoss(elevationDeg);
+
+        var frequencyOverlap = CalculateFrequencyOverlap(
+            interfererStartMhz,
+            interfererEndMhz,
+            selfStartMhz,
+            selfEndMhz);
+
+        var antennaGain = 15.0;
+        var offAxisAttenuation = CalculateOffAxisAttenuation(azimuthDeg, elevationDeg);
+
+        var isolationDb = freeSpacePathLoss + mutualCouplingLoss + polarizationLoss +
+                          offAxisAttenuation - antennaGain - frequencyOverlap * 10;
+
+        var minIsolation = 0.0;
+        var maxIsolation = 100.0;
+
+        return Math.Clamp(isolationDb, minIsolation, maxIsolation);
+    }
+
+    private double CalculateIsolationApproximate(
+        double distanceMeters,
+        double azimuthDeg,
+        double frequencyMhz,
+        double interfererStartMhz,
+        double interfererEndMhz,
+        double selfStartMhz,
+        double selfEndMhz,
+        double interfererPowerDbm)
+    {
+        var wavelengthMeters = 299.792458 / frequencyMhz;
+
+        var freeSpacePathLoss = 20 * Math.Log10(4 * Math.PI * distanceMeters / wavelengthMeters);
+
+        var frequencyOverlap = CalculateFrequencyOverlap(
+            interfererStartMhz,
+            interfererEndMhz,
+            selfStartMhz,
+            selfEndMhz);
+
+        var distanceFactor = 1.5;
+        if (distanceMeters > 100) distanceFactor = 2.0;
+        if (distanceMeters > 500) distanceFactor = 2.5;
+
+        var approximateCouplingLoss = 20 * distanceFactor * Math.Log10(distanceMeters / wavelengthMeters) * 0.5;
+
+        var offAxisFactor = Math.Abs(azimuthDeg) > 60 ? 15 : 5;
+
+        var isolationDb = freeSpacePathLoss + approximateCouplingLoss +
+                          offAxisFactor - 15 - frequencyOverlap * 5;
+
+        _logger.LogDebug("Using approximate isolation calculation for distance {Distance}m: {Isolation:F1}dB",
+            distanceMeters, isolationDb);
+
+        return Math.Clamp(isolationDb, 0, 100);
+    }
+
+    private static double CalculateMutualCouplingLoss(
+        double distanceMeters,
+        double azimuthDeg,
+        double elevationDeg,
+        double heightOffsetMeters,
+        double frequencyMhz)
+    {
+        var wavelengthMeters = 299.792458 / frequencyMhz;
+        var normalizedDistance = distanceMeters / wavelengthMeters;
+
+        if (normalizedDistance < 1.0)
+        {
+            return 20 * Math.Log10(1.0 / normalizedDistance) * 0.5;
+        }
+
+        if (normalizedDistance > 10.0)
+        {
+            return 30 * Math.Log10(normalizedDistance) + 10;
+        }
+
+        var heightFactor = Math.Abs(heightOffsetMeters) / (wavelengthMeters * 2);
+        var couplingLoss = 30 * Math.Log10(normalizedDistance) + 20 * heightFactor;
+
+        return couplingLoss;
     }
 
     private Task<CoSiteInterferenceResult> AnalyzeSingleInterferenceAsync(
@@ -129,72 +391,9 @@ public class CoSiteInterferenceAnalyzer : ICoSiteInterferenceAnalyzer
             Recommendation = recommendation,
             VectorX = Math.Round(vectorX, 6),
             VectorY = Math.Round(vectorY, 6),
-            VectorZ = Math.Round(vectorZ, 6)
+            VectorZ = Math.Round(vectorZ, 6),
+            IsApproximated = interferingAntenna.IsApproximated
         });
-    }
-
-    private double CalculateIsolation(
-        double distanceMeters,
-        double azimuthDeg,
-        double elevationDeg,
-        double heightOffsetMeters,
-        double interfererStartMhz,
-        double interfererEndMhz,
-        double selfStartMhz,
-        double selfEndMhz,
-        double interfererPowerDbm)
-    {
-        var frequencyMhz = (interfererStartMhz + interfererEndMhz) / 2.0;
-        var wavelengthMeters = 299.792458 / frequencyMhz;
-
-        var freeSpacePathLoss = 20 * Math.Log10(4 * Math.PI * distanceMeters / wavelengthMeters);
-
-        var mutualCouplingLoss = CalculateMutualCouplingLoss(
-            distanceMeters,
-            azimuthDeg,
-            elevationDeg,
-            heightOffsetMeters,
-            frequencyMhz);
-
-        var polarizationLoss = CalculatePolarizationLoss(elevationDeg);
-
-        var frequencyOverlap = CalculateFrequencyOverlap(
-            interfererStartMhz,
-            interfererEndMhz,
-            selfStartMhz,
-            selfEndMhz);
-
-        var antennaGain = 15.0;
-        var offAxisAttenuation = CalculateOffAxisAttenuation(azimuthDeg, elevationDeg);
-
-        var isolationDb = freeSpacePathLoss + mutualCouplingLoss + polarizationLoss +
-                          offAxisAttenuation - antennaGain - frequencyOverlap * 10;
-
-        var minIsolation = 0.0;
-        var maxIsolation = 100.0;
-
-        return Math.Clamp(isolationDb, minIsolation, maxIsolation);
-    }
-
-    private static double CalculateMutualCouplingLoss(
-        double distanceMeters,
-        double azimuthDeg,
-        double elevationDeg,
-        double heightOffsetMeters,
-        double frequencyMhz)
-    {
-        var wavelengthMeters = 299.792458 / frequencyMhz;
-        var normalizedDistance = distanceMeters / wavelengthMeters;
-
-        if (normalizedDistance < 1.0)
-        {
-            return 20 * Math.Log10(1.0 / normalizedDistance) * 0.5;
-        }
-
-        var heightFactor = Math.Abs(heightOffsetMeters) / (wavelengthMeters * 2);
-        var couplingLoss = 30 * Math.Log10(normalizedDistance) + 20 * heightFactor;
-
-        return couplingLoss;
     }
 
     private static double CalculatePolarizationLoss(double elevationDeg)

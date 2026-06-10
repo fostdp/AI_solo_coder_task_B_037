@@ -93,24 +93,46 @@ public class PaEfficiencyEvaluator : IPaEfficiencyEvaluator
         var channelMetrics = recentMetrics
             .Where(m => m.ChannelId == channel.Id.ToString() || m.ChannelIndex == channel.ChannelIndex)
             .OrderByDescending(m => m.Timestamp)
-            .Take(5)
+            .Take(10)
             .ToList();
 
         double outputPowerDbm;
-        double paTemperature;
+        double rawTemperature;
+        double calibratedTemperature;
         double inputPowerDbm;
+        bool temperatureDriftDetected = false;
+        double temperatureDriftAmount = 0;
 
         if (channelMetrics.Any())
         {
             outputPowerDbm = channelMetrics.Average(m => m.TxPower);
-            paTemperature = channelMetrics.Average(m => m.PaTemperature);
+            rawTemperature = channelMetrics.Average(m => m.PaTemperature);
             inputPowerDbm = outputPowerDbm - _options.NominalGainDb;
+
+            calibratedTemperature = CalibrateTemperature(
+                rawTemperature,
+                channelMetrics,
+                recentMetrics,
+                history,
+                out temperatureDriftDetected,
+                out temperatureDriftAmount);
         }
         else
         {
             outputPowerDbm = channel.TxPower ?? 43.0;
-            paTemperature = 45.0;
+            rawTemperature = 45.0;
+            calibratedTemperature = 45.0;
             inputPowerDbm = outputPowerDbm - _options.NominalGainDb;
+        }
+
+        var paTemperature = calibratedTemperature;
+
+        if (temperatureDriftDetected)
+        {
+            _logger.LogWarning(
+                "Temperature drift detected for channel {ChannelIndex}: raw={RawTemp:F1}°C, " +
+                "calibrated={CalibratedTemp:F1}°C, drift={Drift:F1}°C",
+                channel.ChannelIndex, rawTemperature, calibratedTemperature, temperatureDriftAmount);
         }
 
         var gainDb = outputPowerDbm - inputPowerDbm;
@@ -146,6 +168,9 @@ public class PaEfficiencyEvaluator : IPaEfficiencyEvaluator
             ChannelId = channel.Id,
             ChannelIndex = channel.ChannelIndex,
             PaTemperature = Math.Round(paTemperature, 2),
+            RawPaTemperature = Math.Round(rawTemperature, 2),
+            TemperatureDriftDetected = temperatureDriftDetected,
+            TemperatureDriftAmount = Math.Round(temperatureDriftAmount, 2),
             OutputPowerDbm = Math.Round(outputPowerDbm, 4),
             InputPowerDbm = Math.Round(inputPowerDbm, 4),
             GainDb = Math.Round(gainDb, 4),
@@ -162,6 +187,106 @@ public class PaEfficiencyEvaluator : IPaEfficiencyEvaluator
             EfficiencyHistory = efficiencyHistory,
             HistoryTimestamps = historyTimestamps
         });
+    }
+
+    private double CalibrateTemperature(
+        double rawTemperature,
+        List<ChannelMetric> channelMetrics,
+        IReadOnlyList<ChannelMetric> allMetrics,
+        List<PaEfficiencyRecord> history,
+        out bool driftDetected,
+        out double driftAmount)
+    {
+        driftDetected = false;
+        driftAmount = 0;
+
+        if (channelMetrics.Count < 3)
+        {
+            return rawTemperature;
+        }
+
+        double referenceTemperature = 0;
+        int referenceCount = 0;
+
+        if (history.Count >= 5)
+        {
+            var recentHistory = history
+                .OrderByDescending(h => h.Timestamp)
+                .Take(10)
+                .ToList();
+
+            referenceTemperature += recentHistory.Average(h => h.PaTemperature);
+            referenceCount++;
+        }
+
+        var otherChannelTemperatures = allMetrics
+            .Where(m => m.ChannelIndex != channelMetrics.First().ChannelIndex)
+            .Select(m => m.PaTemperature)
+            .Where(t => t > -40 && t < 125)
+            .ToList();
+
+        if (otherChannelTemperatures.Count >= 3)
+        {
+            var tempStd = CalculateStdDev(otherChannelTemperatures);
+            var tempMean = otherChannelTemperatures.Average();
+
+            var validTemps = otherChannelTemperatures
+                .Where(t => Math.Abs(t - tempMean) < 3 * tempStd)
+                .ToList();
+
+            if (validTemps.Count >= 3)
+            {
+                referenceTemperature += validTemps.Average();
+                referenceCount++;
+            }
+        }
+
+        if (referenceCount == 0)
+        {
+            return rawTemperature;
+        }
+
+        referenceTemperature /= referenceCount;
+
+        var currentStd = CalculateStdDev(channelMetrics.Select(m => m.PaTemperature));
+        var currentMean = channelMetrics.Average(m => m.PaTemperature);
+
+        var stableMetrics = channelMetrics
+            .Where(m => Math.Abs(m.PaTemperature - currentMean) < 2 * currentStd)
+            .ToList();
+
+        var stableMean = stableMetrics.Any()
+            ? stableMetrics.Average(m => m.PaTemperature)
+            : currentMean;
+
+        driftAmount = stableMean - referenceTemperature;
+        var driftThreshold = _options.TemperatureDriftThreshold;
+
+        if (Math.Abs(driftAmount) > driftThreshold)
+        {
+            driftDetected = true;
+
+            var alpha = _options.KalmanFilterAlpha;
+            var beta = 1.0 - alpha;
+
+            var calibratedTemperature = alpha * stableMean + beta * referenceTemperature;
+
+            var minTemperature = -30.0;
+            var maxTemperature = 100.0;
+
+            return Math.Clamp(calibratedTemperature, minTemperature, maxTemperature);
+        }
+
+        return rawTemperature;
+    }
+
+    private static double CalculateStdDev(IEnumerable<double> values)
+    {
+        if (values.Count() < 2) return 0;
+
+        var mean = values.Average();
+        var sumOfSquares = values.Sum(v => Math.Pow(v - mean, 2));
+        return Math.Sqrt(sumOfSquares / (values.Count() - 1));
     }
 
     private static double EstimateDcCurrent(double outputPowerW, double temperature)

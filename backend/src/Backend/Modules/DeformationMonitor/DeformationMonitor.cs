@@ -37,8 +37,9 @@ public class DeformationMonitor : IDeformationMonitor
         _logger.LogDebug("Running deformation analysis for station {StationId}", request.StationId);
 
         var results = new List<DeformationResult>();
+        var processedSensorData = PreprocessSensorData(request.SensorData);
 
-        foreach (var sensorData in request.SensorData)
+        foreach (var sensorData in processedSensorData)
         {
             try
             {
@@ -80,6 +81,243 @@ public class DeformationMonitor : IDeformationMonitor
             DateTime.UtcNow), stoppingToken);
 
         return results.AsReadOnly();
+    }
+
+    private IReadOnlyList<SensorData> PreprocessSensorData(IReadOnlyList<SensorData> sensorDataList)
+    {
+        var processedData = new List<SensorData>(sensorDataList);
+
+        DetectAndFlagAnomalies(processedData);
+        InterpolateMissingData(processedData);
+
+        var anomalyCount = processedData.Count(d => d.IsAnomaly);
+        var interpolatedCount = processedData.Count(d => d.IsInterpolated);
+
+        if (anomalyCount > 0)
+        {
+            _logger.LogWarning("Detected {AnomalyCount} anomalous sensor readings out of {TotalCount}",
+                anomalyCount, sensorDataList.Count);
+        }
+
+        if (interpolatedCount > 0)
+        {
+            _logger.LogInformation("Interpolated {InterpolatedCount} missing sensor readings",
+                interpolatedCount);
+        }
+
+        return processedData.AsReadOnly();
+    }
+
+    private void DetectAndFlagAnomalies(List<SensorData> sensorDataList)
+    {
+        if (sensorDataList.Count < 3) return;
+
+        var validTiltX = sensorDataList.Where(d => !double.IsNaN(d.TiltAngleX)).Select(d => d.TiltAngleX).ToList();
+        var validTiltY = sensorDataList.Where(d => !double.IsNaN(d.TiltAngleY)).Select(d => d.TiltAngleY).ToList();
+        var validStrain = sensorDataList.Where(d => !double.IsNaN(d.StrainValue)).Select(d => d.StrainValue).ToList();
+
+        if (validTiltX.Count < 3 || validStrain.Count < 3) return;
+
+        var tiltXStats = (Mean: validTiltX.Average(), Std: CalculateStdDev(validTiltX));
+        var tiltYStats = (Mean: validTiltY.Average(), Std: CalculateStdDev(validTiltY));
+        var strainStats = (Mean: validStrain.Average(), Std: CalculateStdDev(validStrain));
+
+        const double zScoreThreshold = 3.0;
+        const double maxPhysicalTilt = 15.0;
+        const double maxPhysicalStrain = 5000e-6;
+        const double maxPhysicalWindSpeed = 50.0;
+
+        for (int i = 0; i < sensorDataList.Count; i++)
+        {
+            var data = sensorDataList[i];
+            var isAnomaly = false;
+
+            if (double.IsNaN(data.TiltAngleX) || double.IsInfinity(data.TiltAngleX) ||
+                double.IsNaN(data.TiltAngleY) || double.IsInfinity(data.TiltAngleY) ||
+                double.IsNaN(data.TiltAngleZ) || double.IsInfinity(data.TiltAngleZ) ||
+                double.IsNaN(data.StrainValue) || double.IsInfinity(data.StrainValue) ||
+                double.IsNaN(data.WindSpeed) || double.IsInfinity(data.WindSpeed))
+            {
+                isAnomaly = true;
+            }
+
+            if (Math.Abs(data.TiltAngleX - tiltXStats.Mean) > zScoreThreshold * tiltXStats.Std ||
+                Math.Abs(data.TiltAngleX) > maxPhysicalTilt)
+            {
+                isAnomaly = true;
+            }
+
+            if (Math.Abs(data.TiltAngleY - tiltYStats.Mean) > zScoreThreshold * tiltYStats.Std ||
+                Math.Abs(data.TiltAngleY) > maxPhysicalTilt)
+            {
+                isAnomaly = true;
+            }
+
+            if (Math.Abs(data.StrainValue - strainStats.Mean) > zScoreThreshold * strainStats.Std ||
+                Math.Abs(data.StrainValue) > maxPhysicalStrain)
+            {
+                isAnomaly = true;
+            }
+
+            if (data.WindSpeed < 0 || data.WindSpeed > maxPhysicalWindSpeed)
+            {
+                isAnomaly = true;
+            }
+
+            if (data.Temperature < -40 || data.Temperature > 125)
+            {
+                isAnomaly = true;
+            }
+
+            if (isAnomaly)
+            {
+                sensorDataList[i] = data with { IsAnomaly = true };
+            }
+        }
+    }
+
+    private void InterpolateMissingData(List<SensorData> sensorDataList)
+    {
+        const int gridSize = 3;
+        const int totalSensors = gridSize * gridSize;
+
+        for (int i = 0; i < sensorDataList.Count; i++)
+        {
+            if (!sensorDataList[i].IsAnomaly) continue;
+
+            var sensorIndex = sensorDataList[i].SensorIndex;
+            var row = sensorIndex / gridSize;
+            var col = sensorIndex % gridSize;
+
+            var neighbors = new List<(int Row, int Col, double Weight)>();
+
+            for (int dr = -1; dr <= 1; dr++)
+            {
+                for (int dc = -1; dc <= 1; dc++)
+                {
+                    if (dr == 0 && dc == 0) continue;
+
+                    var neighborRow = row + dr;
+                    var neighborCol = col + dc;
+
+                    if (neighborRow >= 0 && neighborRow < gridSize &&
+                        neighborCol >= 0 && neighborCol < gridSize)
+                    {
+                        var neighborIndex = neighborRow * gridSize + neighborCol;
+                        var neighbor = sensorDataList.FirstOrDefault(s => s.SensorIndex == neighborIndex);
+
+                        if (neighbor != null && !neighbor.IsAnomaly && !neighbor.IsInterpolated)
+                        {
+                            var distance = Math.Sqrt(dr * dr + dc * dc);
+                            neighbors.Add((neighborRow, neighborCol, 1.0 / distance));
+                        }
+                    }
+                }
+            }
+
+            if (neighbors.Count >= 2)
+            {
+                var totalWeight = neighbors.Sum(n => n.Weight);
+
+                var interpolatedTiltX = neighbors.Sum(n =>
+                {
+                    var neighbor = sensorDataList.First(s =>
+                        s.SensorIndex == n.Row * gridSize + n.Col);
+                    return n.Weight * neighbor.TiltAngleX;
+                }) / totalWeight;
+
+                var interpolatedTiltY = neighbors.Sum(n =>
+                {
+                    var neighbor = sensorDataList.First(s =>
+                        s.SensorIndex == n.Row * gridSize + n.Col);
+                    return n.Weight * neighbor.TiltAngleY;
+                }) / totalWeight;
+
+                var interpolatedTiltZ = neighbors.Sum(n =>
+                {
+                    var neighbor = sensorDataList.First(s =>
+                        s.SensorIndex == n.Row * gridSize + n.Col);
+                    return n.Weight * neighbor.TiltAngleZ;
+                }) / totalWeight;
+
+                var interpolatedStrain = neighbors.Sum(n =>
+                {
+                    var neighbor = sensorDataList.First(s =>
+                        s.SensorIndex == n.Row * gridSize + n.Col);
+                    return n.Weight * neighbor.StrainValue;
+                }) / totalWeight;
+
+                var interpolatedTemp = neighbors.Sum(n =>
+                {
+                    var neighbor = sensorDataList.First(s =>
+                        s.SensorIndex == n.Row * gridSize + n.Col);
+                    return n.Weight * neighbor.Temperature;
+                }) / totalWeight;
+
+                var interpolatedWind = neighbors.Sum(n =>
+                {
+                    var neighbor = sensorDataList.First(s =>
+                        s.SensorIndex == n.Row * gridSize + n.Col);
+                    return n.Weight * neighbor.WindSpeed;
+                }) / totalWeight;
+
+                sensorDataList[i] = sensorDataList[i] with
+                {
+                    TiltAngleX = interpolatedTiltX,
+                    TiltAngleY = interpolatedTiltY,
+                    TiltAngleZ = interpolatedTiltZ,
+                    StrainValue = interpolatedStrain,
+                    Temperature = interpolatedTemp,
+                    WindSpeed = interpolatedWind,
+                    IsAnomaly = false,
+                    IsInterpolated = true
+                };
+            }
+            else if (neighbors.Count == 1)
+            {
+                var neighborIndex = neighbors[0].Row * gridSize + neighbors[0].Col;
+                var neighbor = sensorDataList.First(s => s.SensorIndex == neighborIndex);
+
+                sensorDataList[i] = sensorDataList[i] with
+                {
+                    TiltAngleX = neighbor.TiltAngleX,
+                    TiltAngleY = neighbor.TiltAngleY,
+                    TiltAngleZ = neighbor.TiltAngleZ,
+                    StrainValue = neighbor.StrainValue,
+                    Temperature = neighbor.Temperature,
+                    WindSpeed = neighbor.WindSpeed,
+                    IsAnomaly = false,
+                    IsInterpolated = true
+                };
+            }
+            else
+            {
+                var validData = sensorDataList.Where(d => !d.IsAnomaly).ToList();
+                if (validData.Any())
+                {
+                    sensorDataList[i] = sensorDataList[i] with
+                    {
+                        TiltAngleX = validData.Average(d => d.TiltAngleX),
+                        TiltAngleY = validData.Average(d => d.TiltAngleY),
+                        TiltAngleZ = validData.Average(d => d.TiltAngleZ),
+                        StrainValue = validData.Average(d => d.StrainValue),
+                        Temperature = validData.Average(d => d.Temperature),
+                        WindSpeed = validData.Average(d => d.WindSpeed),
+                        IsAnomaly = false,
+                        IsInterpolated = true
+                    };
+                }
+            }
+        }
+    }
+
+    private static double CalculateStdDev(IEnumerable<double> values)
+    {
+        if (values.Count() < 2) return 0;
+
+        var mean = values.Average();
+        var sumOfSquares = values.Sum(v => Math.Pow(v - mean, 2));
+        return Math.Sqrt(sumOfSquares / (values.Count() - 1));
     }
 
     private Task<DeformationResult> AnalyzeSensorDataAsync(
@@ -146,7 +384,13 @@ public class DeformationMonitor : IDeformationMonitor
             ExceedsThreshold = exceedsThreshold,
             CorrectionAngleAzimuth = Math.Round(correctionAzimuth, 6),
             CorrectionAngleElevation = Math.Round(correctionElevation, 6),
-            CorrectionApplied = false
+            CorrectionApplied = false,
+            TiltAngleX = sensorData.TiltAngleX,
+            TiltAngleY = sensorData.TiltAngleY,
+            TiltAngleZ = sensorData.TiltAngleZ,
+            StrainValue = sensorData.StrainValue,
+            IsInterpolated = sensorData.IsInterpolated,
+            IsAnomaly = sensorData.IsAnomaly
         });
     }
 
