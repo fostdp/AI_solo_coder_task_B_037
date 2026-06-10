@@ -2,6 +2,7 @@ using AntennaMonitoring.Data;
 using AntennaMonitoring.Repositories;
 using AntennaMonitoring.Services;
 using AntennaMonitoring.Algorithms;
+using AntennaMonitoring.Models;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -53,11 +54,7 @@ builder.Services.AddSingleton<IBeamformingCalibration, KalmanFilterCalibration>(
 builder.Services.AddSingleton<IHealthDiagnosis, RandomForestDiagnosis>();
 builder.Services.AddSingleton<IHealthDiagnosis, LSTMDiagnosis>();
 
-builder.Services.AddSingleton<IECPRIService, ECPRIService>();
-builder.Services.AddHostedService<IECPRIService>(provider => provider.GetRequiredService<IECPRIService>());
-builder.Services.AddHostedService<MQTTService>();
-builder.Services.AddHostedService<CalibrationService>();
-builder.Services.AddHostedService<DiagnosisService>();
+builder.Services.AddApplicationModules(builder.Configuration);
 
 builder.Services.AddScoped<IAlarmService, AlarmService>();
 builder.Services.AddScoped<ICalibrationService, CalibrationService>();

@@ -1,8 +1,10 @@
 using AntennaMonitoring.Algorithms;
 using AntennaMonitoring.DTOs;
+using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
 using AntennaMonitoring.Repositories;
 using AntennaMonitoring.Services;
+using AntennaMonitoring.Modules.HealthDiagnoser;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -19,6 +21,7 @@ public class DiagnosisController : ControllerBase
     private readonly IEnumerable<IHealthDiagnosis> _diagnosisModels;
     private readonly IInfluxDBRepository _influxDBRepository;
     private readonly DiagnosisOptions _options;
+    private readonly IHealthDiagnoser _healthDiagnoser;
 
     public DiagnosisController(
         IDiagnosisRecordRepository diagnosisRecordRepository,
@@ -27,7 +30,8 @@ public class DiagnosisController : ControllerBase
         IChannelRepository channelRepository,
         IEnumerable<IHealthDiagnosis> diagnosisModels,
         IInfluxDBRepository influxDBRepository,
-        IOptions<DiagnosisOptions> options)
+        IOptions<DiagnosisOptions> options,
+        IHealthDiagnoser healthDiagnoser)
     {
         _diagnosisRecordRepository = diagnosisRecordRepository;
         _diagnosisService = diagnosisService;
@@ -36,6 +40,7 @@ public class DiagnosisController : ControllerBase
         _diagnosisModels = diagnosisModels;
         _influxDBRepository = influxDBRepository;
         _options = options.Value;
+        _healthDiagnoser = healthDiagnoser;
     }
 
     [HttpGet]
@@ -92,15 +97,6 @@ public class DiagnosisController : ControllerBase
             return NotFound(new { message = $"基站 {request.StationId} 不存在" });
         }
 
-        var model = string.IsNullOrEmpty(request.ModelType)
-            ? _diagnosisModels.FirstOrDefault(m => m.ModelName == _options.ModelType) ?? _diagnosisModels.First()
-            : _diagnosisModels.FirstOrDefault(m => m.ModelName.Equals(request.ModelType, StringComparison.OrdinalIgnoreCase));
-
-        if (model == null)
-        {
-            return BadRequest(new { message = $"无效的诊断模型类型: {request.ModelType}" });
-        }
-
         var channels = (await _channelRepository.GetByStationIdAsync(request.StationId, cancellationToken)).ToList();
         if (!channels.Any())
         {
@@ -112,43 +108,22 @@ public class DiagnosisController : ControllerBase
         var allMetrics = (await _influxDBRepository.GetStationMetricsAsync(
             request.StationId.ToString(), startTime, endTime, cancellationToken)).ToList();
 
-        var results = new List<DiagnosisResult>();
-        var diagnosisRecords = new List<DiagnosisRecord>();
-
-        foreach (var channel in channels)
+        var engineRequest = new DiagnosisRequest
         {
-            var channelMetrics = allMetrics.Where(m => m.ChannelId == channel.Id.ToString()).ToList();
-            var result = await model.DiagnoseAsync(request.StationId, channel, channelMetrics, cancellationToken);
+            StationId = request.StationId,
+            ModelType = request.ModelType ?? _options.ModelType,
+            Channels = channels.AsReadOnly(),
+            Metrics = allMetrics.AsReadOnly()
+        };
 
-            results.Add(result);
+        var engineResponse = await _healthDiagnoser.RunDiagnosisAsync(engineRequest, cancellationToken);
 
-            diagnosisRecords.Add(new DiagnosisRecord
-            {
-                StationId = request.StationId,
-                ChannelId = channel.Id,
-                DiagnosisTime = result.DiagnosisTime,
-                SwrValue = (decimal)result.SwrValue,
-                TemperatureValue = (decimal)result.TemperatureValue,
-                FailureProbability = (decimal)result.FailureProbability,
-                ModelType = result.ModelType,
-                PredictionHorizonHours = result.PredictionHorizonHours,
-                Recommendation = result.Recommendation
-            });
-
-            await _channelRepository.UpdateFailureProbabilityAsync(
-                channel.Id, (decimal)result.FailureProbability, cancellationToken);
-
-            await _influxDBRepository.WriteDiagnosisMetricsAsync(
-                request.StationId, channel.Id, result.ModelType,
-                result.FailureProbability, result.SwrPredicted,
-                result.TemperaturePredicted, result.AnomalyScore,
-                result.PredictedFailureHours, result.HealthScore,
-                cancellationToken);
+        if (!engineResponse.Success)
+        {
+            return BadRequest(new { message = engineResponse.ErrorMessage ?? "诊断失败" });
         }
 
-        await _diagnosisRecordRepository.BulkCreateAsync(diagnosisRecords, cancellationToken);
-
-        var dtos = results.Select(r => new DiagnosisResultDTO
+        var dtos = engineResponse.Results.Select(r => new DiagnosisResultDTO
         {
             ChannelId = r.ChannelId,
             ChannelIndex = r.ChannelIndex,
@@ -158,7 +133,7 @@ public class DiagnosisController : ControllerBase
             ModelType = r.ModelType,
             PredictionHorizonHours = r.PredictionHorizonHours,
             Recommendation = r.Recommendation,
-            DiagnosisTime = r.DiagnosisTime
+            DiagnosisTime = engineResponse.DiagnosisTime
         }).ToList();
 
         return Ok(dtos);

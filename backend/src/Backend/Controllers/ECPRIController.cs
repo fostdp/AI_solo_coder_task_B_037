@@ -1,6 +1,6 @@
 using AntennaMonitoring.DTOs;
 using AntennaMonitoring.Repositories;
-using AntennaMonitoring.Services;
+using AntennaMonitoring.Modules.EcpriIngestor;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AntennaMonitoring.Controllers;
@@ -9,16 +9,16 @@ namespace AntennaMonitoring.Controllers;
 [Route("api/[controller]")]
 public class ECPRIController : ControllerBase
 {
-    private readonly IECPRIService _ecpriService;
+    private readonly IEcpriIngestor _ecpriIngestor;
     private readonly IECPRIDataRepository _ecpriDataRepository;
     private readonly IBaseStationRepository _baseStationRepository;
 
     public ECPRIController(
-        IECPRIService ecpriService,
+        IEcpriIngestor ecpriIngestor,
         IECPRIDataRepository ecpriDataRepository,
         IBaseStationRepository baseStationRepository)
     {
-        _ecpriService = ecpriService;
+        _ecpriIngestor = ecpriIngestor;
         _ecpriDataRepository = ecpriDataRepository;
         _baseStationRepository = baseStationRepository;
     }
@@ -49,12 +49,15 @@ public class ECPRIController : ControllerBase
             return NotFound($"Base station with id {packet.StationId} not found");
         }
 
-        var response = await _ecpriService.ProcessDataPacketAsync(packet, cancellationToken);
+        await _ecpriIngestor.ProcessHttpPacketAsync(packet, cancellationToken);
 
-        if (!response.Success)
+        var response = new ECPRIResponse
         {
-            return BadRequest(response);
-        }
+            Success = true,
+            Message = "Packet processed successfully",
+            SequenceNumber = packet.SequenceNumber,
+            ProcessedAt = DateTime.UtcNow
+        };
 
         return Ok(response);
     }
@@ -70,26 +73,48 @@ public class ECPRIController : ControllerBase
         }
 
         var packetList = packets.ToList();
+        var processedCount = 0;
+        var failedPackets = new List<string>();
+
         foreach (var packet in packetList)
         {
             if (string.IsNullOrEmpty(packet.StationId))
             {
-                return BadRequest("StationId is required for all packets");
+                failedPackets.Add($"Packet missing StationId");
+                continue;
             }
 
             if (!Guid.TryParse(packet.StationId, out var stationId))
             {
-                return BadRequest($"Invalid StationId format: {packet.StationId}");
+                failedPackets.Add($"Invalid StationId: {packet.StationId}");
+                continue;
             }
 
             var station = await _baseStationRepository.GetByIdAsync(stationId, cancellationToken);
             if (station == null)
             {
-                return NotFound($"Base station with id {packet.StationId} not found");
+                failedPackets.Add($"Station not found: {packet.StationId}");
+                continue;
+            }
+
+            try
+            {
+                await _ecpriIngestor.ProcessHttpPacketAsync(packet, cancellationToken);
+                processedCount++;
+            }
+            catch (Exception ex)
+            {
+                failedPackets.Add($"Packet {packet.SequenceNumber}: {ex.Message}");
             }
         }
 
-        var response = await _ecpriService.ProcessBatchDataAsync(packetList, cancellationToken);
+        var response = new ECPRIBatchResponse
+        {
+            TotalPackets = packetList.Count,
+            ProcessedCount = processedCount,
+            FailedCount = failedPackets.Count,
+            Errors = failedPackets
+        };
 
         return Ok(response);
     }

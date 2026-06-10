@@ -1,8 +1,10 @@
 using AntennaMonitoring.Algorithms;
 using AntennaMonitoring.DTOs;
+using AntennaMonitoring.Messages;
 using AntennaMonitoring.Models;
 using AntennaMonitoring.Repositories;
 using AntennaMonitoring.Services;
+using AntennaMonitoring.Modules.CalibrationEngine;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AntennaMonitoring.Controllers;
@@ -17,6 +19,7 @@ public class CalibrationController : ControllerBase
     private readonly IChannelRepository _channelRepository;
     private readonly IInfluxDBRepository _influxDBRepository;
     private readonly IEnumerable<IBeamformingCalibration> _beamformingAlgorithms;
+    private readonly ICalibrationEngine _calibrationEngine;
 
     public CalibrationController(
         ICalibrationRecordRepository calibrationRecordRepository,
@@ -24,7 +27,8 @@ public class CalibrationController : ControllerBase
         IBaseStationRepository baseStationRepository,
         IChannelRepository channelRepository,
         IInfluxDBRepository influxDBRepository,
-        IEnumerable<IBeamformingCalibration> beamformingAlgorithms)
+        IEnumerable<IBeamformingCalibration> beamformingAlgorithms,
+        ICalibrationEngine calibrationEngine)
     {
         _calibrationRecordRepository = calibrationRecordRepository;
         _calibrationService = calibrationService;
@@ -32,6 +36,7 @@ public class CalibrationController : ControllerBase
         _channelRepository = channelRepository;
         _influxDBRepository = influxDBRepository;
         _beamformingAlgorithms = beamformingAlgorithms;
+        _calibrationEngine = calibrationEngine;
     }
 
     [HttpGet]
@@ -76,16 +81,6 @@ public class CalibrationController : ControllerBase
             return NotFound(new { message = $"基站 {request.StationId} 不存在" });
         }
 
-        var algorithm = _beamformingAlgorithms.FirstOrDefault(a =>
-            a.AlgorithmName.Equals(request.AlgorithmType, StringComparison.OrdinalIgnoreCase));
-
-        if (algorithm == null && !string.IsNullOrEmpty(request.AlgorithmType))
-        {
-            return BadRequest(new { message = $"不支持的算法类型: {request.AlgorithmType}" });
-        }
-
-        algorithm ??= _beamformingAlgorithms.First();
-
         var channels = (await _channelRepository.GetByStationIdAsync(request.StationId, cancellationToken)).ToList();
         if (!channels.Any())
         {
@@ -109,19 +104,22 @@ public class CalibrationController : ControllerBase
             return BadRequest(new { message = "无法获取通道度量数据，请稍后重试" });
         }
 
-        var result = await algorithm.CalibrateAsync(request.StationId, channels, metrics, cancellationToken);
-
-        if (!result.Success && !result.Converged)
+        var engineRequest = new CalibrationRequest
         {
-            return BadRequest(new { message = "校准失败，请检查基站通道和数据" });
+            StationId = request.StationId,
+            AlgorithmType = request.AlgorithmType ?? string.Empty,
+            Channels = channels.AsReadOnly(),
+            Metrics = metrics.AsReadOnly()
+        };
+
+        var engineResponse = await _calibrationEngine.RunCalibrationAsync(engineRequest, cancellationToken);
+
+        if (!engineResponse.Success && !engineResponse.Converged)
+        {
+            return BadRequest(new { message = engineResponse.ErrorMessage ?? "校准失败，请检查基站通道和数据" });
         }
 
-        if (result.Success || result.Converged)
-        {
-            await SaveCalibrationResultsAsync(request.StationId, result, cancellationToken);
-        }
-
-        var dtos = result.ChannelCalibrations.Select(cc => new CalibrationResultDTO
+        var dtos = engineResponse.Results.Select(cc => new CalibrationResultDTO
         {
             ChannelId = cc.ChannelId,
             ChannelIndex = cc.ChannelIndex,
@@ -129,10 +127,10 @@ public class CalibrationController : ControllerBase
             PhaseDeviation = cc.PhaseDeviation,
             CalibrationCoeffAmplitude = cc.CalibrationCoeffAmplitude,
             CalibrationCoeffPhase = cc.CalibrationCoeffPhase,
-            SllBefore = result.SllBefore,
-            SllAfter = result.SllAfter,
-            Algorithm = result.Algorithm,
-            CalibrationTime = result.CalibrationTime
+            SllBefore = engineResponse.SllBefore,
+            SllAfter = engineResponse.SllAfter,
+            Algorithm = engineResponse.Algorithm,
+            CalibrationTime = engineResponse.CalibrationTime
         }).ToList();
 
         return Ok(dtos);
